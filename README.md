@@ -96,6 +96,46 @@ docker compose down -v
 - `POST /api/profile`
 - `POST /api/recommendation`
 - `GET /api/health`
+- `GET /api/telegram/status`
+- `POST /api/telegram/setup-webhook`
+- `POST /api/telegram/webhook/<secret>`
+
+## Telegram Bot Integration (stabil, optional)
+
+Der Bot kann direkt in dasselbe Empfehlungs-System schreiben wie das Haupteingabefeld im Dashboard.
+
+1) `backend/.env` ergänzen:
+
+```env
+TELEGRAM_BOT_TOKEN=123456:ABC...
+TELEGRAM_WEBHOOK_SECRET=sehr-langes-zufalls-secret
+TELEGRAM_WEBHOOK_BASE_URL=https://deine-domain.tld
+TELEGRAM_ALLOWED_CHAT_IDS=123456789
+TELEGRAM_MODE=webhook
+```
+
+Für lokale Entwicklung ohne öffentliche HTTPS-URL kannst du stattdessen Polling nutzen:
+
+```env
+TELEGRAM_MODE=polling
+```
+
+In Polling-Modus ist `TELEGRAM_WEBHOOK_BASE_URL` nicht nötig.
+
+2) Backend neu starten.
+
+3) Nur im Webhook-Modus: Webhook registrieren:
+
+```bash
+curl -X POST http://localhost:5000/api/telegram/setup-webhook
+```
+
+4) In Telegram den Bot anschreiben (`/start`) und danach Aufgaben als normale Nachricht senden.
+
+Sicherheits-/Stabilitätsdetails:
+- Webhook nutzt Secret im URL-Pfad und validiert den Telegram-Secret-Header.
+- Eingehende Updates werden dedupliziert (`update_id`) und über Worker-Queue verarbeitet.
+- Optionaler Chat-Whitelist-Filter via `TELEGRAM_ALLOWED_CHAT_IDS`.
 
 ## Hinweise
 

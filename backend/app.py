@@ -7,6 +7,9 @@ import os
 import json
 import time
 import threading
+import queue
+import html
+from typing import Any, TypeVar
 from datetime import datetime
 import requests
 from functools import lru_cache, wraps
@@ -56,8 +59,54 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
 
+TELEGRAM_BOT_TOKEN = (os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
+TELEGRAM_WEBHOOK_SECRET = (os.environ.get('TELEGRAM_WEBHOOK_SECRET') or '').strip()
+TELEGRAM_ALLOWED_CHAT_IDS = (os.environ.get('TELEGRAM_ALLOWED_CHAT_IDS') or '').strip()
+TELEGRAM_WEBHOOK_PATH = '/api/telegram/webhook'
+TELEGRAM_API_BASE = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}' if TELEGRAM_BOT_TOKEN else ''
+TELEGRAM_WEBHOOK_BASE_URL = (os.environ.get('TELEGRAM_WEBHOOK_BASE_URL') or '').strip().rstrip('/')
+TELEGRAM_MODE = (os.environ.get('TELEGRAM_MODE') or 'webhook').strip().lower()
+if TELEGRAM_MODE not in {'webhook', 'polling'}:
+    TELEGRAM_MODE = 'webhook'
+
+
+def parse_allowed_chat_ids(raw_value: str) -> set[int]:
+    ids = set()
+    if not raw_value:
+        return ids
+
+    for token in raw_value.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            ids.add(int(token))
+        except ValueError:
+            app.logger.warning(f'Telegram config: invalid chat id ignored: {token}')
+    return ids
+
+
+ALLOWED_CHAT_IDS = parse_allowed_chat_ids(TELEGRAM_ALLOWED_CHAT_IDS)
+telegram_update_queue = queue.Queue(maxsize=500)
+telegram_worker_started = False
+telegram_receiver_started = False
+telegram_worker_lock = threading.Lock()
+telegram_receiver_lock = threading.Lock()
+telegram_processed_updates = {}
+telegram_processed_lock = threading.Lock()
+TELEGRAM_UPDATE_TTL_SECONDS = 600
+
 # Datenbank mit App verbinden
 db.init_app(app)
+
+ModelT = TypeVar('ModelT')
+
+
+def make_model(model_cls: type[ModelT], **values: Any) -> ModelT:
+    instance = model_cls()
+    for key, value in values.items():
+        setattr(instance, key, value)
+    return instance
 
 
 def ttl_cache(ttl_seconds=300):
@@ -89,7 +138,7 @@ def ttl_cache(ttl_seconds=300):
             if hasattr(func, 'cache_clear'):
                 func.cache_clear()
 
-        wrapper.cache_clear = cache_clear
+        setattr(wrapper, 'cache_clear', cache_clear)
         return wrapper
 
     return decorator
@@ -162,6 +211,269 @@ def clear_data_caches():
     get_tool_scores.cache_clear()
 
 
+def is_telegram_enabled() -> bool:
+    return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET)
+
+
+def is_chat_allowed(chat_id: int) -> bool:
+    if not ALLOWED_CHAT_IDS:
+        return True
+    return chat_id in ALLOWED_CHAT_IDS
+
+
+def telegram_api_call(method: str, payload: dict, timeout_seconds: int = 20) -> dict:
+    if not TELEGRAM_API_BASE:
+        raise RuntimeError('Telegram API nicht konfiguriert')
+
+    response = requests.post(
+        f'{TELEGRAM_API_BASE}/{method}',
+        headers={'Content-Type': 'application/json'},
+        json=payload,
+        timeout=timeout_seconds,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f'Telegram API Fehler: HTTP {response.status_code}')
+
+    result = response.json()
+    if not result.get('ok'):
+        raise RuntimeError(f"Telegram API Fehler: {result.get('description', 'Unbekannt')}")
+    return result
+
+
+def send_telegram_message(chat_id: int, text: str, reply_to_message_id=None):
+    payload = {
+        'chat_id': chat_id,
+        'text': (text or '').strip()[:4096],
+        'parse_mode': 'HTML',
+        'disable_web_page_preview': True,
+    }
+    if reply_to_message_id:
+        payload['reply_to_message_id'] = reply_to_message_id
+
+    return telegram_api_call('sendMessage', payload)
+
+
+def format_telegram_recommendation(task_description: str, payload: dict) -> str:
+    recommendation = payload.get('recommendation', {}) if isinstance(payload, dict) else {}
+    workflow = recommendation.get('workflow') if isinstance(recommendation, dict) else []
+    tools = recommendation.get('recommended_tools') if isinstance(recommendation, dict) else []
+    next_step = (payload.get('next_step') or recommendation.get('next_step') or '').strip()
+    area = (payload.get('area') or '').strip()
+    subcategory = (payload.get('subcategory') or '').strip()
+    optimized_prompt = (recommendation.get('optimized_prompt') or '').strip()
+
+    lines = []
+
+    if next_step:
+        lines.append('<b>Jetzt</b>')
+        lines.append(html.escape(next_step[:220]))
+
+    if area or subcategory:
+        lines.append('')
+        lines.append('<b>Bereich</b>')
+        lines.append(f"{html.escape((area or 'n/a')[:80])} | {html.escape((subcategory or 'n/a')[:80])}")
+
+    tool_names = []
+    if isinstance(tools, list):
+        for tool in tools:
+            if isinstance(tool, dict):
+                name = (tool.get('name') or '').strip()
+                if name:
+                    tool_names.append(name)
+
+    if isinstance(workflow, list) and workflow:
+        lines.append('')
+        lines.append('<b>Schritte</b>')
+        for index, step in enumerate(workflow[:4]):
+            step_text = str(step).strip()
+            if not step_text:
+                continue
+
+            if index < len(tool_names):
+                lines.append(
+                    f"- {html.escape(step_text[:220])} (Tool: {html.escape(tool_names[index][:60])})"
+                )
+            else:
+                lines.append(f"- {html.escape(step_text[:220])}")
+
+    if optimized_prompt:
+        lines.append('')
+        lines.append('<b>Prompt</b>')
+        lines.append(f"<pre>{html.escape(optimized_prompt[:900])}</pre>")
+
+    return '\n'.join(lines)[:4096]
+
+
+def remember_processed_update(update_id: int):
+    now = time.time()
+    with telegram_processed_lock:
+        telegram_processed_updates[update_id] = now
+        expired = [
+            key for key, timestamp in telegram_processed_updates.items()
+            if now - timestamp > TELEGRAM_UPDATE_TTL_SECONDS
+        ]
+        for key in expired:
+            telegram_processed_updates.pop(key, None)
+
+
+def is_duplicate_update(update_id: int) -> bool:
+    with telegram_processed_lock:
+        return update_id in telegram_processed_updates
+
+
+def handle_telegram_update(update: dict):
+    message = update.get('message') or update.get('edited_message') or {}
+    if not message:
+        return
+
+    chat = message.get('chat') or {}
+    chat_id = chat.get('id')
+    text = (message.get('text') or '').strip()
+    message_id = message.get('message_id')
+
+    if chat_id is None or not text:
+        return
+
+    try:
+        chat_id = int(chat_id)
+    except (TypeError, ValueError):
+        return
+
+    if not is_chat_allowed(chat_id):
+        send_telegram_message(chat_id, 'Dieser Chat ist nicht freigeschaltet.', reply_to_message_id=message_id)
+        return
+
+    if text.lower() in {'/start', '/help'}:
+        help_text = (
+            'Sende mir deine Aufgabe als Nachricht.\n'
+            'Ich antworte kurz mit Bereich, erstem Schritt und Toolvorschlag.\n\n'
+            'Beispiel:\n'
+            '"Ich recherchiere zu Kryptologie und brauche belastbare Quellen."'
+        )
+        send_telegram_message(chat_id, help_text, reply_to_message_id=message_id)
+        return
+
+    if text.startswith('/'):
+        send_telegram_message(chat_id, 'Unbekannter Befehl. Nutze /help für Hinweise.', reply_to_message_id=message_id)
+        return
+
+    try:
+        payload = build_recommendation_response(text)
+        response_text = format_telegram_recommendation(text, payload)
+        send_telegram_message(chat_id, response_text, reply_to_message_id=message_id)
+    except Exception as err:
+        app.logger.exception(f'Telegram processing failed: {err}')
+        send_telegram_message(
+            chat_id,
+            'Beim Erstellen der Empfehlung ist ein Fehler aufgetreten. Bitte versuche es in 1 Minute erneut.',
+            reply_to_message_id=message_id,
+        )
+
+
+def telegram_worker_loop():
+    app.logger.info('Telegram worker: started')
+    while True:
+        update = telegram_update_queue.get()
+        try:
+            with app.app_context():
+                handle_telegram_update(update)
+        except Exception as err:
+            app.logger.exception(f'Telegram worker unexpected error: {err}')
+        finally:
+            telegram_update_queue.task_done()
+
+
+def telegram_polling_loop():
+    app.logger.info('Telegram polling receiver: started')
+    offset = 0
+    backoff_seconds = 1
+
+    while True:
+        try:
+            response = requests.post(
+                f'{TELEGRAM_API_BASE}/getUpdates',
+                headers={'Content-Type': 'application/json'},
+                json={
+                    'offset': offset,
+                    'timeout': 25,
+                    'allowed_updates': ['message', 'edited_message'],
+                },
+                timeout=35,
+            )
+
+            if response.status_code != 200:
+                raise RuntimeError(f'getUpdates HTTP {response.status_code}')
+
+            payload = response.json()
+            if not payload.get('ok'):
+                raise RuntimeError(payload.get('description', 'getUpdates failed'))
+
+            updates = payload.get('result') or []
+            for update in updates:
+                update_id = update.get('update_id')
+                try:
+                    update_id = int(update_id)
+                except (TypeError, ValueError):
+                    continue
+
+                offset = max(offset, update_id + 1)
+
+                if is_duplicate_update(update_id):
+                    continue
+                remember_processed_update(update_id)
+
+                try:
+                    telegram_update_queue.put(update, timeout=2)
+                except queue.Full:
+                    app.logger.warning('Telegram polling: queue full, dropping update')
+
+            backoff_seconds = 1
+        except Exception as err:
+            app.logger.warning(f'Telegram polling receiver error: {err}')
+            time.sleep(backoff_seconds)
+            backoff_seconds = min(30, backoff_seconds * 2)
+
+
+def ensure_telegram_receiver_started():
+    global telegram_receiver_started
+    if not is_telegram_enabled():
+        return
+    if TELEGRAM_MODE != 'polling':
+        return
+
+    with telegram_receiver_lock:
+        if telegram_receiver_started:
+            return
+
+        try:
+            telegram_api_call('deleteWebhook', {'drop_pending_updates': False})
+        except Exception as err:
+            app.logger.warning(f'Telegram polling: deleteWebhook failed: {err}')
+
+        receiver = threading.Thread(target=telegram_polling_loop, daemon=True, name='telegram-polling-receiver')
+        receiver.start()
+        telegram_receiver_started = True
+        app.logger.info('Telegram polling receiver: initialized')
+
+
+def ensure_telegram_worker_started():
+    global telegram_worker_started
+    if not is_telegram_enabled():
+        return
+
+    with telegram_worker_lock:
+        if telegram_worker_started:
+            return
+
+        worker = threading.Thread(target=telegram_worker_loop, daemon=True, name='telegram-worker')
+        worker.start()
+        telegram_worker_started = True
+        app.logger.info('Telegram worker: initialized')
+
+    ensure_telegram_receiver_started()
+
+
 def seed_database():
     """Befüllt die Datenbank mit Beispieldaten beim ersten Start"""
     # Nur seeden wenn die Tabellen leer sind
@@ -169,86 +481,96 @@ def seed_database():
         return
     
     # Standard-Nutzer anlegen
-    user = User(name="Mein Profil")
+    user = make_model(User, name="Mein Profil")
     db.session.add(user)
     
     # Beispiel-Fähigkeiten
     skills = [
-        Skill(name="Python-Grundlagen", level="Fortgeschritten"),
-        Skill(name="Web-Recherche", level="Experte"),
-        Skill(name="Bildbearbeitung", level="Anfänger"),
-        Skill(name="Textschreiben", level="Fortgeschritten"),
-        Skill(name="KI-Prompt-Engineering", level="Anfänger"),
+        make_model(Skill, name="Python-Grundlagen", level="Fortgeschritten"),
+        make_model(Skill, name="Web-Recherche", level="Experte"),
+        make_model(Skill, name="Bildbearbeitung", level="Anfänger"),
+        make_model(Skill, name="Textschreiben", level="Fortgeschritten"),
+        make_model(Skill, name="KI-Prompt-Engineering", level="Anfänger"),
     ]
     for skill in skills:
         db.session.add(skill)
     
     # Beispiel-Ziele
     goals = [
-        Goal(description="Note in Mathe verbessern"),
-        Goal(description="KI-Tools effektiver nutzen lernen"),
-        Goal(description="Schulprojekte schneller abschließen"),
+        make_model(Goal, description="Note in Mathe verbessern"),
+        make_model(Goal, description="KI-Tools effektiver nutzen lernen"),
+        make_model(Goal, description="Schulprojekte schneller abschließen"),
     ]
     for goal in goals:
         db.session.add(goal)
     
     # Nützliche kostenlose Tools
     tools = [
-        Tool(
+        make_model(
+            Tool,
             name="Groq API (Llama 3)",
             category="KI-Textgenerierung",
             url="https://console.groq.com",
             notes="Sehr schnelle kostenlose Text-KI, ideal für Analysen und Schreiben"
         ),
-        Tool(
+        make_model(
+            Tool,
             name="Stable Diffusion (DreamStudio)",
             category="Bilderstellung",
             url="https://dreamstudio.ai",
             notes="Kostenlose Credits für realistische KI-Bilder"
         ),
-        Tool(
+        make_model(
+            Tool,
             name="Perplexity AI",
             category="Internet-Recherche",
             url="https://perplexity.ai",
             notes="KI-gestützte Suchmaschine mit Quellenangaben, kostenlos nutzbar"
         ),
-        Tool(
+        make_model(
+            Tool,
             name="Zotero",
             category="Literaturverwaltung",
             url="https://zotero.org",
             notes="Kostenlose Literaturverwaltung für wissenschaftliche Arbeiten"
         ),
-        Tool(
+        make_model(
+            Tool,
             name="Canva (Free)",
             category="Design & Präsentation",
             url="https://canva.com",
             notes="Kostenlose Designplattform für Präsentationen, Poster, Social Media"
         ),
-        Tool(
+        make_model(
+            Tool,
             name="Anki",
             category="Lernen & Schule",
             url="https://apps.ankiweb.net",
             notes="Kostenlose Lernkarten-App mit intelligentem Wiederholungssystem"
         ),
-        Tool(
+        make_model(
+            Tool,
             name="Wolfram Alpha",
             category="Mathe & Wissenschaft",
             url="https://wolframalpha.com",
             notes="Mächtiges Rechenwerkzeug für Mathematik, Physik, Chemie"
         ),
-        Tool(
+        make_model(
+            Tool,
             name="DeepL",
             category="Übersetzung",
             url="https://deepl.com",
             notes="Hochqualitative kostenlose Übersetzungen"
         ),
-        Tool(
+        make_model(
+            Tool,
             name="Bing Image Creator",
             category="Bilderstellung",
             url="https://www.bing.com/images/create",
             notes="Kostenlose KI-Bildgenerierung via DALL-E, kein Account nötig"
         ),
-        Tool(
+        make_model(
+            Tool,
             name="NotebookLM",
             category="Recherche & Analyse",
             url="https://notebooklm.google.com",
@@ -290,7 +612,7 @@ def update_profile():
     action = data.get('action')  # 'add_skill', 'delete_skill', 'add_goal', 'delete_goal', 'update_name'
     
     if action == 'add_skill':
-        skill = Skill(name=data['name'], level=data.get('level', 'Anfänger'))
+        skill = make_model(Skill, name=data['name'], level=data.get('level', 'Anfänger'))
         db.session.add(skill)
         db.session.commit()
         clear_data_caches()
@@ -305,7 +627,7 @@ def update_profile():
         return jsonify({'success': True})
     
     elif action == 'add_goal':
-        goal = Goal(description=data['description'])
+        goal = make_model(Goal, description=data['description'])
         db.session.add(goal)
         db.session.commit()
         clear_data_caches()
@@ -328,7 +650,8 @@ def update_profile():
         return jsonify({'success': True})
     
     elif action == 'add_tool':
-        tool = Tool(
+        tool = make_model(
+            Tool,
             name=data['name'],
             category=data.get('category', 'Allgemein'),
             url=data.get('url', ''),
@@ -405,7 +728,8 @@ def create_research_session():
     if not isinstance(sources, list):
         return jsonify({'error': 'sources muss ein JSON-Array sein'}), 400
 
-    session = ResearchSession(
+    session = make_model(
+        ResearchSession,
         query=query,
         sources=sources,
         summary=summary,
@@ -446,7 +770,8 @@ def upsert_school_project():
             except ValueError:
                 return jsonify({'error': 'deadline muss YYYY-MM-DD sein'}), 400
 
-        project = SchoolProject(
+        project = make_model(
+            SchoolProject,
             title=(data.get('title') or '').strip(),
             subject=(data.get('subject') or '').strip(),
             deadline=deadline,
@@ -462,9 +787,11 @@ def upsert_school_project():
         return jsonify({'success': True, 'project': project.to_dict()})
 
     if action == 'update':
-        project_id = data.get('id')
+        project_id_raw = data.get('id')
+        if project_id_raw is None:
+            return jsonify({'error': 'id muss numerisch sein'}), 400
         try:
-            project_id = int(project_id)
+            project_id = int(str(project_id_raw).strip())
         except (TypeError, ValueError):
             return jsonify({'error': 'id muss numerisch sein'}), 400
 
@@ -499,9 +826,11 @@ def upsert_school_project():
         return jsonify({'success': True, 'project': project.to_dict()})
 
     if action == 'delete':
-        project_id = data.get('id')
+        project_id_raw = data.get('id')
+        if project_id_raw is None:
+            return jsonify({'error': 'id muss numerisch sein'}), 400
         try:
-            project_id = int(project_id)
+            project_id = int(str(project_id_raw).strip())
         except (TypeError, ValueError):
             return jsonify({'error': 'id muss numerisch sein'}), 400
 
@@ -537,7 +866,7 @@ def set_user_context():
 
     context_item = UserContext.query.filter_by(area=area, key=key).first()
     if not context_item:
-        context_item = UserContext(area=area, key=key, value='' if value is None else str(value))
+        context_item = make_model(UserContext, area=area, key=key, value='' if value is None else str(value))
         db.session.add(context_item)
     else:
         context_item.value = '' if value is None else str(value)
@@ -940,7 +1269,8 @@ def generate_generic_help_recommendation(task_description: str) -> dict:
 
 
 def save_workflow_history(task_description: str, recommendation: dict):
-    history_entry = WorkflowHistory(
+    history_entry = make_model(
+        WorkflowHistory,
         task_description=task_description,
         recommendation_json=json.dumps(recommendation, ensure_ascii=False),
         created_at=datetime.utcnow(),
@@ -1133,20 +1463,10 @@ def generate_fallback_recommendation(task: str, tools: list, skills: list, task_
     )
 
 
-@app.route('/api/recommendation', methods=['POST'])
-def get_recommendation():
-    """
-    Zentrale Empfehlungs-Endpunkt:
-    1. Nimmt eine Aufgabenbeschreibung entgegen
-    2. Liest Nutzerprofil und Tools aus der DB
-    3. Ruft Groq-API (Llama 3) auf
-    4. Gibt strukturierte Empfehlung zurück
-    """
-    data = request.get_json()
-    task_description = data.get('task_description', '').strip()
-    
+def build_recommendation_response(task_description: str) -> dict:
+    task_description = (task_description or '').strip()
     if not task_description:
-        return jsonify({'error': 'Keine Aufgabenbeschreibung angegeben'}), 400
+        raise ValueError('Keine Aufgabenbeschreibung angegeben')
 
     task_key = task_description.strip().lower()
     now = time.time()
@@ -1163,7 +1483,7 @@ def get_recommendation():
             and 'personalization_note' in existing['payload']
             and 'next_step' in existing['payload']
         ):
-            return jsonify(existing['payload'])
+            return existing['payload']
 
         expired_keys = [
             key for key, value in recommendation_cache.items()
@@ -1438,13 +1758,125 @@ Falls kein Tool passt, gib trotzdem einen präzisen Workflow mit umsetzbaren Sch
             'payload': response_payload
         }
 
-    return jsonify(response_payload)
+    return response_payload
+
+
+@app.route('/api/recommendation', methods=['POST'])
+def get_recommendation():
+    """
+    Zentrale Empfehlungs-Endpunkt:
+    1. Nimmt eine Aufgabenbeschreibung entgegen
+    2. Liest Nutzerprofil und Tools aus der DB
+    3. Ruft Groq-API (Llama 3) auf
+    4. Gibt strukturierte Empfehlung zurück
+    """
+    data = request.get_json(silent=True) or {}
+    task_description = (data.get('task_description') or '').strip()
+
+    if not task_description:
+        return jsonify({'error': 'Keine Aufgabenbeschreibung angegeben'}), 400
+
+    try:
+        response_payload = build_recommendation_response(task_description)
+        return jsonify(response_payload)
+    except ValueError as value_error:
+        return jsonify({'error': str(value_error)}), 400
+    except Exception as err:
+        app.logger.exception(f'Recommendation endpoint failed: {err}')
+        return jsonify({'error': 'Interner Fehler bei der Empfehlungserstellung'}), 500
+
+
+@app.route('/api/telegram/status', methods=['GET'])
+def telegram_status():
+    return jsonify({
+        'enabled': is_telegram_enabled(),
+        'mode': TELEGRAM_MODE,
+        'worker_started': telegram_worker_started,
+        'receiver_started': telegram_receiver_started,
+        'allowed_chat_ids_configured': bool(ALLOWED_CHAT_IDS),
+        'queue_size': telegram_update_queue.qsize(),
+        'webhook_path': f'{TELEGRAM_WEBHOOK_PATH}/<secret>',
+        'webhook_base_url_configured': bool(TELEGRAM_WEBHOOK_BASE_URL),
+    })
+
+
+@app.route('/api/telegram/setup-webhook', methods=['POST'])
+def telegram_setup_webhook():
+    if not is_telegram_enabled():
+        return jsonify({'error': 'Telegram ist nicht konfiguriert (TELEGRAM_BOT_TOKEN / TELEGRAM_WEBHOOK_SECRET fehlen)'}), 400
+
+    if not TELEGRAM_WEBHOOK_BASE_URL:
+        return jsonify({'error': 'TELEGRAM_WEBHOOK_BASE_URL fehlt'}), 400
+
+    webhook_url = f"{TELEGRAM_WEBHOOK_BASE_URL}{TELEGRAM_WEBHOOK_PATH}/{TELEGRAM_WEBHOOK_SECRET}"
+    payload = {
+        'url': webhook_url,
+        'secret_token': TELEGRAM_WEBHOOK_SECRET,
+        'drop_pending_updates': True,
+        'allowed_updates': ['message', 'edited_message'],
+    }
+
+    try:
+        result = telegram_api_call('setWebhook', payload)
+        ensure_telegram_worker_started()
+        return jsonify({'success': True, 'webhook_url': webhook_url, 'telegram_response': result})
+    except Exception as err:
+        app.logger.exception(f'Telegram setWebhook failed: {err}')
+        return jsonify({'error': str(err)}), 502
+
+
+@app.route('/api/telegram/webhook/<secret>', methods=['POST'])
+def telegram_webhook(secret):
+    if not is_telegram_enabled():
+        return jsonify({'error': 'Telegram nicht aktiviert'}), 404
+
+    if secret != TELEGRAM_WEBHOOK_SECRET:
+        return jsonify({'error': 'Ungültiger Webhook-Secret'}), 403
+
+    header_secret = (request.headers.get('X-Telegram-Bot-Api-Secret-Token') or '').strip()
+    if header_secret and header_secret != TELEGRAM_WEBHOOK_SECRET:
+        return jsonify({'error': 'Ungültiger Secret-Header'}), 403
+
+    update = request.get_json(silent=True) or {}
+    update_id = update.get('update_id')
+    if update_id is None:
+        return jsonify({'ok': True, 'ignored': 'no_update_id'})
+
+    try:
+        update_id = int(update_id)
+    except (TypeError, ValueError):
+        return jsonify({'ok': True, 'ignored': 'invalid_update_id'})
+
+    if is_duplicate_update(update_id):
+        return jsonify({'ok': True, 'deduplicated': True})
+
+    remember_processed_update(update_id)
+    ensure_telegram_worker_started()
+
+    try:
+        telegram_update_queue.put_nowait(update)
+    except queue.Full:
+        app.logger.warning('Telegram webhook queue full, dropping update')
+        message = update.get('message') or update.get('edited_message') or {}
+        chat_id = ((message.get('chat') or {}).get('id'))
+        if chat_id is not None:
+            try:
+                send_telegram_message(int(chat_id), '⚠️ Der Bot ist gerade ausgelastet. Bitte versuche es in 1-2 Minuten erneut.')
+            except Exception:
+                pass
+        return jsonify({'ok': True, 'queued': False, 'reason': 'queue_full'})
+
+    return jsonify({'ok': True, 'queued': True})
 
 
 @app.route('/api/health', methods=['GET'])
 def health():
     """Health-Check Endpunkt"""
-    return jsonify({'status': 'ok', 'groq_configured': bool(GROQ_API_KEY and GROQ_API_KEY != 'dein-groq-api-key-hier')})
+    return jsonify({
+        'status': 'ok',
+        'groq_configured': bool(GROQ_API_KEY and GROQ_API_KEY != 'dein-groq-api-key-hier'),
+        'telegram_configured': is_telegram_enabled(),
+    })
 
 
 @app.route('/api/workflow-history', methods=['GET', 'POST'])
@@ -1456,12 +1888,14 @@ def update_workflow_history():
 
     data = request.get_json() or {}
 
-    workflow_history_id = data.get('id', data.get('workflow_history_id'))
-    user_rating = data.get('rating', data.get('user_rating'))
+    workflow_history_id_raw = data.get('id', data.get('workflow_history_id'))
+    user_rating_raw = data.get('rating', data.get('user_rating'))
+    if workflow_history_id_raw is None or user_rating_raw is None:
+        return jsonify({'error': 'id/workflow_history_id und rating/user_rating müssen numerisch sein'}), 400
 
     try:
-        workflow_history_id = int(workflow_history_id)
-        user_rating = int(user_rating)
+        workflow_history_id = int(str(workflow_history_id_raw).strip())
+        user_rating = int(str(user_rating_raw).strip())
     except (TypeError, ValueError):
         return jsonify({'error': 'id/workflow_history_id und rating/user_rating müssen numerisch sein'}), 400
 
@@ -1501,6 +1935,8 @@ if __name__ == '__main__':
 
     seeding_thread = threading.Thread(target=run_seed_in_background, daemon=True)
     seeding_thread.start()
+
+    ensure_telegram_worker_started()
 
     port = int(os.environ.get('PORT', '5000'))
     debug_mode = os.environ.get('FLASK_DEBUG', 'true').lower() == 'true'

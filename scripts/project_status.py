@@ -10,6 +10,8 @@ import sys
 from datetime import datetime
 from importlib import metadata
 from pathlib import Path
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 ROOT = Path(__file__).resolve().parent.parent
 IGNORED_DIRS = {"node_modules", "__pycache__", ".git", "venv", ".venv", "dist"}
@@ -52,6 +54,17 @@ REQUIRED_ENDPOINTS = [
     "/api/research-session",
     "/api/school-projects",
     "/api/user-context",
+    "/api/telegram/status",
+    "/api/telegram/setup-webhook",
+    "/api/telegram/webhook/<secret>",
+]
+
+TELEGRAM_ENV_KEYS = [
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_WEBHOOK_SECRET",
+    "TELEGRAM_WEBHOOK_BASE_URL",
+    "TELEGRAM_ALLOWED_CHAT_IDS",
+    "TELEGRAM_MODE",
 ]
 
 LOG_DIR = ROOT / "logs"
@@ -238,6 +251,7 @@ def get_backend_report() -> list[str]:
         report.append("  ❌ backend/requirements.txt fehlt")
 
     env_path = ROOT / "backend" / ".env"
+    env_map: dict[str, str] = {}
     report.append(".env Key-Namen (ohne Werte):")
     if env_path.exists():
         keys = []
@@ -245,7 +259,11 @@ def get_backend_report() -> list[str]:
             clean = line.strip()
             if not clean or clean.startswith("#") or "=" not in clean:
                 continue
-            keys.append(clean.split("=", 1)[0].strip())
+            key, value = clean.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            keys.append(key)
+            env_map[key] = value
         if keys:
             for key in keys:
                 report.append(f"  - {key}")
@@ -253,6 +271,23 @@ def get_backend_report() -> list[str]:
             report.append("  (keine Keys gefunden)")
     else:
         report.append("  backend/.env nicht vorhanden")
+
+    report.append("Telegram-Konfig-Checks (.env):")
+    if env_path.exists():
+        for key in TELEGRAM_ENV_KEYS:
+            if key in env_map:
+                value = env_map.get(key, "")
+                if key in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET"}:
+                    status = "✅" if bool(value) else "⚠️"
+                elif key == "TELEGRAM_MODE":
+                    status = "✅" if value in {"polling", "webhook"} else "⚠️"
+                else:
+                    status = "✅"
+                report.append(f"  {status} {key}: vorhanden")
+            else:
+                report.append(f"  ❌ {key}: fehlt")
+    else:
+        report.append("  ❌ backend/.env fehlt")
 
     app_path = ROOT / "backend" / "app.py"
     report.append("API-Endpunkt-Checks (app.py):")
@@ -262,6 +297,16 @@ def get_backend_report() -> list[str]:
             status = "✅" if endpoint in app_content else "❌"
             report.append(f"  {status} {endpoint}")
 
+        report.append("Telegram-Code-Checks (app.py):")
+        has_parse_mode_html = "'parse_mode': 'HTML'" in app_content
+        has_chat_filter = "def is_chat_allowed(" in app_content
+        has_polling_loop = "def telegram_polling_loop(" in app_content
+        has_worker_loop = "def telegram_worker_loop(" in app_content
+        report.append(f"  {'✅' if has_parse_mode_html else '⚠️'} parse_mode HTML in sendMessage")
+        report.append(f"  {'✅' if has_chat_filter else '❌'} Allowlist-Filter vorhanden")
+        report.append(f"  {'✅' if has_polling_loop else '❌'} Polling-Loop vorhanden")
+        report.append(f"  {'✅' if has_worker_loop else '❌'} Worker-Loop vorhanden")
+
         fallback_models = extract_model_fallback_list(app_path)
         if fallback_models:
             report.append("Groq Modell-Fallback-Liste:")
@@ -269,6 +314,21 @@ def get_backend_report() -> list[str]:
                 report.append(f"  - {model}")
         else:
             report.append("Groq Modell-Fallback-Liste: nicht gefunden")
+
+        report.append("Telegram Runtime-Status (wenn Backend läuft):")
+        try:
+            with urlrequest.urlopen("http://localhost:5000/api/telegram/status", timeout=2) as response:
+                if response.status != 200:
+                    report.append(f"  ⚠️ /api/telegram/status HTTP {response.status}")
+                else:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    report.append(f"  ✅ enabled: {payload.get('enabled')}")
+                    report.append(f"  ✅ mode: {payload.get('mode')}")
+                    report.append(f"  ✅ worker_started: {payload.get('worker_started')}")
+                    report.append(f"  ✅ receiver_started: {payload.get('receiver_started')}")
+                    report.append(f"  ✅ allowed_chat_ids_configured: {payload.get('allowed_chat_ids_configured')}")
+        except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            report.append(f"  ⚠️ Nicht erreichbar oder ungültige Antwort: {exc}")
     else:
         report.append("  ❌ backend/app.py fehlt")
 
