@@ -18,6 +18,7 @@ IGNORED_DIRS = {"node_modules", "__pycache__", ".git", "venv", ".venv", "dist"}
 
 CORE_FILES = [
     Path("scripts/project_status.py"),
+    Path("scripts/kpi_auto_report.py"),
     Path("scripts/import_all_data.py"),
     Path("scripts/import_tools.py"),
     Path("scripts/cleanup_db.py"),
@@ -56,6 +57,8 @@ REQUIRED_ENDPOINTS = [
     "/api/school-projects",
     "/api/user-context",
     "/api/kpis",
+    "/api/kpis/targets",
+    "/api/kpis/report",
     "/api/recommendation-feedback",
     "/api/telegram/status",
     "/api/telegram/setup-webhook",
@@ -352,8 +355,20 @@ def get_backend_report() -> list[str]:
                     report.append(f"  ✅ feedback_count: {payload.get('feedback_count')}")
                     report.append(f"  ✅ avg_user_rating: {payload.get('avg_user_rating')}")
                     report.append(f"  ✅ top3_hit_rate: {payload.get('top3_hit_rate')}")
+                    report.append(f"  ✅ kpi_health_index: {payload.get('kpi_health_index')}")
         except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as exc:
             report.append(f"  ⚠️ KPI nicht erreichbar oder ungültig: {exc}")
+
+        report.append("KPI Targets Runtime-Status (wenn Backend läuft):")
+        try:
+            with urlrequest.urlopen("http://localhost:5000/api/kpis/targets", timeout=2) as response:
+                if response.status != 200:
+                    report.append(f"  ⚠️ /api/kpis/targets HTTP {response.status}")
+                else:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    report.append(f"  ✅ target_count: {len(payload) if isinstance(payload, dict) else 0}")
+        except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            report.append(f"  ⚠️ KPI-Targets nicht erreichbar oder ungültig: {exc}")
     else:
         report.append("  ❌ backend/app.py fehlt")
 

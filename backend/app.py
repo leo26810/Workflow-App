@@ -70,6 +70,42 @@ TELEGRAM_MODE = (os.environ.get('TELEGRAM_MODE') or 'webhook').strip().lower()
 if TELEGRAM_MODE not in {'webhook', 'polling'}:
     TELEGRAM_MODE = 'webhook'
 
+KPI_TARGETS = {
+    'feedback_coverage': {'target': 0.6, 'direction': 'min'},
+    'avg_user_rating': {'target': 4.2, 'direction': 'min'},
+    'satisfaction_rate': {'target': 0.75, 'direction': 'min'},
+    'acceptance_rate': {'target': 0.7, 'direction': 'min'},
+    'reuse_rate': {'target': 0.55, 'direction': 'min'},
+    'avg_time_saved_minutes': {'target': 20.0, 'direction': 'min'},
+    'top3_hit_rate': {'target': 0.7, 'direction': 'min'},
+}
+
+
+def evaluate_kpi_against_target(metric_name: str, value):
+    target_config = KPI_TARGETS.get(metric_name)
+    if not target_config:
+        return {'status': 'no-target', 'target': None, 'direction': None, 'gap': None}
+
+    target = target_config['target']
+    direction = target_config['direction']
+
+    if value is None:
+        return {'status': 'insufficient-data', 'target': target, 'direction': direction, 'gap': None}
+
+    if direction == 'min':
+        met = value >= target
+        gap = round(value - target, 4)
+    else:
+        met = value <= target
+        gap = round(target - value, 4)
+
+    return {
+        'status': 'met' if met else 'below-target',
+        'target': target,
+        'direction': direction,
+        'gap': gap,
+    }
+
 
 def parse_allowed_chat_ids(raw_value: str) -> set[int]:
     ids = set()
@@ -1215,6 +1251,25 @@ def compute_kpi_snapshot(days: int = 30) -> dict:
     top3_hit_rate = round(top3_hits / top3_denominator, 3) if top3_denominator else None
     feedback_coverage = round(len(feedback_rows) / recommendation_count, 3) if recommendation_count else 0.0
 
+    kpi_values = {
+        'feedback_coverage': feedback_coverage,
+        'avg_user_rating': avg_rating,
+        'satisfaction_rate': satisfaction_rate,
+        'acceptance_rate': acceptance_rate,
+        'reuse_rate': reuse_rate,
+        'avg_time_saved_minutes': avg_time_saved_minutes,
+        'top3_hit_rate': top3_hit_rate,
+    }
+
+    target_checks = {
+        name: evaluate_kpi_against_target(name, value)
+        for name, value in kpi_values.items()
+    }
+
+    checks_with_targets = [check for check in target_checks.values() if check.get('status') in {'met', 'below-target'}]
+    met_count = sum(1 for check in checks_with_targets if check['status'] == 'met')
+    health_index = round(met_count / len(checks_with_targets), 3) if checks_with_targets else None
+
     return {
         'window_days': bounded_days,
         'recommendation_count': recommendation_count,
@@ -1226,6 +1281,8 @@ def compute_kpi_snapshot(days: int = 30) -> dict:
         'reuse_rate': reuse_rate,
         'avg_time_saved_minutes': avg_time_saved_minutes,
         'top3_hit_rate': top3_hit_rate,
+        'kpi_targets': target_checks,
+        'kpi_health_index': health_index,
     }
 
 
@@ -1347,9 +1404,16 @@ def build_tool_recommendations(
 ):
     preferred_names = preferred_names or []
     preferred_lower = {name.strip().lower() for name in preferred_names if name}
+    min_score_by_level = {
+        'Anfänger': 0.75,
+        'Fortgeschritten': 0.65,
+        'Experte': 0.55,
+    }
+    minimum_score = min_score_by_level.get(user_level, 0.65)
 
     candidates = []
     challenge_candidates = []
+    fallback_candidates = []
 
     for tool in tools:
         base_score = tool_scores.get(tool.name, 1.0)
@@ -1357,17 +1421,20 @@ def build_tool_recommendations(
 
         hints = TYPE_CATEGORY_HINTS.get(task_type, [])
         if any(hint in category_lower for hint in hints):
-            base_score += 0.35
+            base_score += 0.42
 
         area_lower = (area or '').lower().strip()
         subcategory_lower = (subcategory or '').lower().strip()
         if subcategory_lower and (subcategory_lower in category_lower or category_lower in subcategory_lower):
-            base_score += 0.35
+            base_score += 0.45
         elif area_lower and area_lower in category_lower:
-            base_score += 0.2
+            base_score += 0.24
 
         if tool.name.lower() in preferred_lower:
-            base_score += 0.3
+            base_score += 0.33
+
+        if base_score < 0.5:
+            base_score -= 0.08
 
         required_rank = LEVEL_RANK.get((tool.skill_requirement or '').strip(), 1)
         user_rank = LEVEL_RANK.get(user_level, 1)
@@ -1376,7 +1443,16 @@ def build_tool_recommendations(
             challenge_candidates.append((base_score, tool))
             continue
 
+        fallback_candidates.append((base_score, tool))
+
+        if base_score < minimum_score:
+            continue
+
         candidates.append((base_score, tool))
+
+    if not candidates and fallback_candidates:
+        fallback_candidates.sort(key=lambda item: item[0], reverse=True)
+        candidates = fallback_candidates[:max_count]
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     challenge_candidates.sort(key=lambda item: item[0], reverse=True)
@@ -2162,6 +2238,31 @@ def get_kpis():
 
     snapshot = compute_kpi_snapshot(days=days)
     return jsonify(snapshot)
+
+
+@app.route('/api/kpis/targets', methods=['GET'])
+def get_kpi_targets():
+    return jsonify(KPI_TARGETS)
+
+
+@app.route('/api/kpis/report', methods=['GET'])
+def get_kpi_report():
+    try:
+        days = int(str(request.args.get('days', '30')).strip())
+    except (TypeError, ValueError):
+        return jsonify({'error': 'days muss numerisch sein'}), 400
+
+    snapshot = compute_kpi_snapshot(days=days)
+    return jsonify({
+        'generated_at': datetime.utcnow().isoformat(),
+        'summary': {
+            'kpi_health_index': snapshot.get('kpi_health_index'),
+            'feedback_coverage': snapshot.get('feedback_coverage'),
+            'avg_user_rating': snapshot.get('avg_user_rating'),
+            'top3_hit_rate': snapshot.get('top3_hit_rate'),
+        },
+        'snapshot': snapshot,
+    })
 
 
 @app.route('/api/recommendation-feedback', methods=['POST'])
