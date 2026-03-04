@@ -912,7 +912,13 @@ AREA_KEYWORDS = {
     'recherche_info': ['recherche', 'informationen', 'suche', 'quellen', 'fakten', 'wer ist', 'was ist'],
     'schule_docs': ['mitschreiben', 'notizen', 'dokument', 'aufsatz', 'essay', 'referat', 'facharbeit'],
     'schule_projekt': ['schulprojekt', 'präsentation', 'vortrag', 'hausaufgabe', 'abgabe'],
-    'schule_lernen': ['lernen', 'üben', 'vorbereitung', 'klausur', 'prüfung', 'wiederholen', 'karteikarten']
+    'schule_lernen': ['lernen', 'üben', 'vorbereitung', 'klausur', 'prüfung', 'wiederholen', 'karteikarten'],
+    'alltag_planung': ['planung', 'organisieren', 'struktur', 'todo', 'to-do', 'zeitplan', 'wochenplan', 'routine'],
+    'alltag_kommunikation': ['email', 'e-mail', 'nachricht', 'kommunikation', 'feedback', 'abstimmung', 'meeting'],
+    'alltag_priorisierung': ['priorisierung', 'priorität', 'entscheiden', 'entscheidung', 'fokus', 'dringend', 'wichtig'],
+    'karriere_bewerbung': ['bewerbung', 'lebenslauf', 'cv', 'anschreiben', 'portfolio', 'praktikum', 'ferienjob'],
+    'karriere_skills': ['weiterbildung', 'roadmap', 'skill', 'karriere', 'zertifikat', 'kurs', 'lernpfad'],
+    'karriere_business': ['business', 'geschäftsidee', 'selbstständig', 'freelance', 'angebot', 'kunde', 'crm']
 }
 
 AREA_MAPPING = {
@@ -925,7 +931,52 @@ AREA_MAPPING = {
     'schule_docs': ('Schule', 'Mitschreiben & Dokumente'),
     'schule_projekt': ('Schule', 'Schulprojekte'),
     'schule_lernen': ('Schule', 'Lernen & Üben'),
+    'alltag_planung': ('Alltag & Produktivität', 'Planung & Organisation'),
+    'alltag_kommunikation': ('Alltag & Produktivität', 'Kommunikation'),
+    'alltag_priorisierung': ('Alltag & Produktivität', 'Entscheidungen & Priorisierung'),
+    'karriere_bewerbung': ('Karriere & Zukunft', 'Bewerbung & Portfolio'),
+    'karriere_skills': ('Karriere & Zukunft', 'Skills & Weiterbildung'),
+    'karriere_business': ('Karriere & Zukunft', 'Business & Selbstständigkeit'),
 }
+
+SUBCATEGORY_FALLBACK_KEYWORDS = {
+    'Bilderstellung': ['bild', 'grafik', 'cover', 'visual', 'poster', 'illustration'],
+    'Programmierung': ['code', 'bug', 'debug', 'script', 'python', 'javascript', 'api'],
+    'Promptgeneration': ['prompt', 'anweisung', 'system prompt', 'formulierung'],
+    'Analysen & Zusammenfassung': ['analyse', 'zusammenfassung', 'auswertung', 'interpretation'],
+    'Bildersuche': ['bildquelle', 'lizenzfrei', 'stockfoto', 'bildersuche'],
+    'Informationsrecherche': ['quelle', 'quellen', 'recherche', 'faktencheck', 'literatur'],
+    'Mitschreiben & Dokumente': ['notizen', 'mitschrift', 'dokument', 'protokoll'],
+    'Schulprojekte': ['projekt', 'team', 'referat', 'präsentation'],
+    'Lernen & Üben': ['lernen', 'klausur', 'prüfung', 'üben', 'lernplan'],
+    'Planung & Organisation': ['planung', 'organisieren', 'to-do', 'todo', 'zeitplan', 'routine'],
+    'Kommunikation': ['email', 'nachricht', 'feedback', 'kommunikation', 'abstimmung'],
+    'Entscheidungen & Priorisierung': ['priorisierung', 'priorität', 'entscheiden', 'entscheidung', 'fokus'],
+    'Bewerbung & Portfolio': ['bewerbung', 'lebenslauf', 'cv', 'anschreiben', 'portfolio'],
+    'Skills & Weiterbildung': ['weiterbildung', 'skill', 'roadmap', 'lernpfad', 'zertifikat'],
+    'Business & Selbstständigkeit': ['business', 'selbstständig', 'freelance', 'angebot', 'kunde'],
+}
+
+
+def infer_area_key_from_subcategory_keywords(task_text: str) -> tuple[str | None, int]:
+    lowered = (task_text or '').lower()
+    best_subcategory = None
+    best_score = 0
+
+    for subcategory_name, keywords in SUBCATEGORY_FALLBACK_KEYWORDS.items():
+        score = sum(1 for keyword in keywords if keyword in lowered)
+        if score > best_score:
+            best_score = score
+            best_subcategory = subcategory_name
+
+    if not best_subcategory or best_score <= 0:
+        return None, 0
+
+    for area_key, (_, mapped_subcategory) in AREA_MAPPING.items():
+        if mapped_subcategory == best_subcategory:
+            return area_key, best_score
+
+    return None, 0
 
 
 def classify_task(task_text: str) -> dict:
@@ -950,19 +1001,24 @@ def classify_task(task_text: str) -> dict:
     best_area_key = max(area_scores, key=lambda key: area_scores[key]) if area_scores else None
     best_area_score = area_scores.get(best_area_key, 0) if best_area_key else 0
 
+    fallback_area_key, fallback_area_score = infer_area_key_from_subcategory_keywords(task_text)
+    if fallback_area_key and fallback_area_score > best_area_score:
+        best_area_key = fallback_area_key
+        best_area_score = fallback_area_score
+
     best_type = max(scores, key=lambda key: scores[key]) if scores else 'GENERAL'
     best_score = scores.get(best_type, 0)
 
     if best_score <= 0:
         return {
             'type': 'GENERAL',
-            'confidence': 0.25,
-            'area_key': 'schule_lernen',
-            'area': 'Schule',
-            'subcategory': 'Lernen & Üben',
+            'confidence': 0.3,
+            'area_key': best_area_key or 'schule_lernen',
+            'area': AREA_MAPPING.get(best_area_key or 'schule_lernen', ('Schule', 'Lernen & Üben'))[0],
+            'subcategory': AREA_MAPPING.get(best_area_key or 'schule_lernen', ('Schule', 'Lernen & Üben'))[1],
         }
 
-    confidence = min(1.0, 0.35 + 0.13 * best_score)
+    confidence = min(1.0, 0.3 + 0.1 * best_score + 0.08 * best_area_score)
     if best_area_score <= 0 or best_area_key not in AREA_MAPPING:
         best_area_key = 'schule_lernen'
 
@@ -1006,6 +1062,24 @@ def get_specialized_sub_prompt(area_key: str) -> str:
         ),
         'schule_lernen': (
             'Spezialfokus Schule-Lernen: Nutze Lernmethoden wie Pomodoro, Spaced Repetition und Lernkarten-Generierung.'
+        ),
+        'alltag_planung': (
+            'Spezialfokus Planung/Organisation: Gib konkrete Zeitblöcke, Prioritäten und einen sofort umsetzbaren Tagesstart.'
+        ),
+        'alltag_kommunikation': (
+            'Spezialfokus Kommunikation: Formuliere klar, kurz und adressatengerecht mit konkreten Vorschlägen für Ton und Struktur.'
+        ),
+        'alltag_priorisierung': (
+            'Spezialfokus Priorisierung: Nutze Kriterien, reduziere Komplexität und leite den wichtigsten nächsten Schritt ab.'
+        ),
+        'karriere_bewerbung': (
+            'Spezialfokus Bewerbung/Portfolio: Liefere präzise Textbausteine, Wirkungskriterien und klare Verbesserungen.'
+        ),
+        'karriere_skills': (
+            'Spezialfokus Skills/Weiterbildung: Erstelle Roadmaps mit Meilensteinen, Übungen und überprüfbaren Ergebnissen.'
+        ),
+        'karriere_business': (
+            'Spezialfokus Business/Selbstständigkeit: Arbeite mit Zielgruppe, Angebotsschärfung und einfachen Validierungsschritten.'
         ),
     }
     return specialized_prompts.get(area_key, specialized_prompts['schule_lernen'])

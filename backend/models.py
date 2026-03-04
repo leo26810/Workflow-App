@@ -4,10 +4,19 @@ Verwendet SQLAlchemy ORM mit SQLite als Datenbank
 """
 
 from datetime import date, datetime, timedelta
+from typing import Any, TypeVar
 
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
+ModelT = TypeVar('ModelT')
+
+
+def make_model(model_cls: type[ModelT], **values: Any) -> ModelT:
+    instance = model_cls()
+    for key, value in values.items():
+        setattr(instance, key, value)
+    return instance
 
 
 class User(db.Model):
@@ -549,12 +558,171 @@ def seed_categories():
                 },
             ],
         },
+        {
+            'name': 'Alltag & Produktivität',
+            'icon': '🧭',
+            'description': 'Struktur für Tagesplanung, Kommunikation und Priorisierung im Alltag.',
+            'subcategories': [
+                {
+                    'name': 'Planung & Organisation',
+                    'description': 'Aufgaben strukturieren, Zeitblöcke planen und To-dos systematisch bearbeiten.',
+                    'templates': [
+                        {
+                            'title': 'Tagesplan mit Fokusblöcken',
+                            'description': 'Erstelle einen realistischen Tagesplan mit Deep-Work- und Pausenblöcken.',
+                            'example_input': 'Plane meinen Tag zwischen Schule, Sport und Hausaufgaben in 90-Minuten-Blöcken.',
+                            'tags': 'planung,zeitmanagement,produktivität'
+                        },
+                        {
+                            'title': 'Wochenziele priorisieren',
+                            'description': 'Priorisiere Aufgaben nach Wichtigkeit und Aufwand.',
+                            'example_input': 'Hilf mir, meine Wochenziele mit Must/Should/Could zu sortieren.',
+                            'tags': 'wochenziele,priorisierung,organisation'
+                        },
+                        {
+                            'title': 'Routine für wiederkehrende Aufgaben',
+                            'description': 'Baue eine wiederholbare Routine für tägliche Aufgaben.',
+                            'example_input': 'Erstelle mir eine Morgenroutine für Schule und Lernvorbereitung.',
+                            'tags': 'routine,alltag,struktur'
+                        },
+                    ],
+                },
+                {
+                    'name': 'Kommunikation',
+                    'description': 'Nachrichten, E-Mails und Abstimmungen klar und zielgerichtet formulieren.',
+                    'templates': [
+                        {
+                            'title': 'E-Mail an Lehrkraft formulieren',
+                            'description': 'Schreibe eine höfliche und präzise E-Mail mit klarem Anliegen.',
+                            'example_input': 'Formuliere eine E-Mail an meine Lehrerin wegen einer Fristverlängerung.',
+                            'tags': 'email,schule,kommunikation'
+                        },
+                        {
+                            'title': 'Gruppenchat strukturieren',
+                            'description': 'Formuliere klare Aufgabenverteilung und nächste Schritte für Teams.',
+                            'example_input': 'Schreibe eine Nachricht für unsere Projektgruppe mit klaren To-dos.',
+                            'tags': 'team,chat,abstimmung'
+                        },
+                        {
+                            'title': 'Feedback professionell geben',
+                            'description': 'Formuliere konstruktives Feedback konkret und respektvoll.',
+                            'example_input': 'Hilf mir, Feedback zu einem Referat freundlich und konkret zu schreiben.',
+                            'tags': 'feedback,kommunikation,zusammenarbeit'
+                        },
+                    ],
+                },
+                {
+                    'name': 'Entscheidungen & Priorisierung',
+                    'description': 'Optionen vergleichen, Kriterien definieren und fokussierte Entscheidungen treffen.',
+                    'templates': [
+                        {
+                            'title': 'Optionen mit Kriterienmatrix vergleichen',
+                            'description': 'Bewerte mehrere Optionen nach gewichteten Kriterien.',
+                            'example_input': 'Vergleiche drei Themen für mein Referat anhand Aufwand, Interesse und Quellenlage.',
+                            'tags': 'entscheidung,kriterien,vergleich'
+                        },
+                        {
+                            'title': 'Nächsten besten Schritt bestimmen',
+                            'description': 'Wähle den direkt wirksamsten nächsten Schritt bei vielen offenen Aufgaben.',
+                            'example_input': 'Ich habe 10 offene Tasks. Bestimme den nächsten besten Schritt für heute.',
+                            'tags': 'next-step,fokus,priorisierung'
+                        },
+                        {
+                            'title': 'Aufgaben reduzieren und delegieren',
+                            'description': 'Entscheide, was gestrichen, verschoben oder delegiert werden kann.',
+                            'example_input': 'Hilf mir, meine Aufgabenliste zu kürzen und wichtige Dinge zu priorisieren.',
+                            'tags': 'task-management,delegation,priorität'
+                        },
+                    ],
+                },
+            ],
+        },
+        {
+            'name': 'Karriere & Zukunft',
+            'icon': '🚀',
+            'description': 'Bewerbung, Skill-Aufbau und erste Schritte in berufliche Projekte.',
+            'subcategories': [
+                {
+                    'name': 'Bewerbung & Portfolio',
+                    'description': 'Lebenslauf, Anschreiben und Projektportfolio für Schule, Praktikum und Nebenjob.',
+                    'templates': [
+                        {
+                            'title': 'Anschreiben für Praktikum',
+                            'description': 'Erstelle ein zielgerichtetes Anschreiben für einen Praktikumsplatz.',
+                            'example_input': 'Schreibe ein Anschreiben für ein IT-Praktikum in einem mittelständischen Unternehmen.',
+                            'tags': 'bewerbung,praktikum,anschreiben'
+                        },
+                        {
+                            'title': 'Lebenslauf strukturieren',
+                            'description': 'Bau einen klaren, kompakten Lebenslauf mit relevanten Stationen.',
+                            'example_input': 'Hilf mir, meinen Lebenslauf für einen Ferienjob zu optimieren.',
+                            'tags': 'cv,lebenslauf,job'
+                        },
+                        {
+                            'title': 'Portfolio-Projekt beschreiben',
+                            'description': 'Beschreibe ein Projekt so, dass Kompetenz und Wirkung sichtbar werden.',
+                            'example_input': 'Formuliere mein Schulprojekt als Portfolio-Eintrag mit Ergebnis und Learnings.',
+                            'tags': 'portfolio,projekt,karriere'
+                        },
+                    ],
+                },
+                {
+                    'name': 'Skills & Weiterbildung',
+                    'description': 'Lernpfade für berufsrelevante Fähigkeiten aufbauen und tracken.',
+                    'templates': [
+                        {
+                            'title': 'Skill-Roadmap 90 Tage',
+                            'description': 'Definiere Lernziele und Meilensteine für die nächsten 3 Monate.',
+                            'example_input': 'Erstelle eine 90-Tage-Roadmap, um Python für Data Analysis zu lernen.',
+                            'tags': 'roadmap,skill,weiterbildung'
+                        },
+                        {
+                            'title': 'Lernressourcen kuratieren',
+                            'description': 'Wähle passende Ressourcen nach Level und Zeitbudget.',
+                            'example_input': 'Finde die besten kostenlosen Ressourcen für UI/UX-Grundlagen.',
+                            'tags': 'ressourcen,lernen,kuratierung'
+                        },
+                        {
+                            'title': 'Praxisprojekt für Skill-Aufbau',
+                            'description': 'Plane ein kleines Umsetzungsprojekt für praktisches Lernen.',
+                            'example_input': 'Gib mir ein Mini-Projekt, um JavaScript und APIs praktisch zu üben.',
+                            'tags': 'projektbasiert,skillaufbau,praxis'
+                        },
+                    ],
+                },
+                {
+                    'name': 'Business & Selbstständigkeit',
+                    'description': 'Ideen validieren, einfache Angebote formulieren und Prozesse strukturieren.',
+                    'templates': [
+                        {
+                            'title': 'Geschäftsidee validieren',
+                            'description': 'Prüfe eine Idee auf Zielgruppe, Nutzen und Realisierbarkeit.',
+                            'example_input': 'Validiere meine Idee für einen lokalen Nachhilfe-Service mit KI-Unterstützung.',
+                            'tags': 'business,validierung,idee'
+                        },
+                        {
+                            'title': 'Angebotstext erstellen',
+                            'description': 'Erstelle einen klaren Angebotstext mit Leistungsumfang und Preislogik.',
+                            'example_input': 'Formuliere ein Angebot für Social-Media-Design als Nebenjob.',
+                            'tags': 'angebot,freelance,text'
+                        },
+                        {
+                            'title': 'Kundenprozess skizzieren',
+                            'description': 'Skizziere den Ablauf vom Erstkontakt bis zur Lieferung.',
+                            'example_input': 'Plane einen einfachen Kundenprozess für meinen kleinen Design-Service.',
+                            'tags': 'prozess,kundenreise,selbstständig'
+                        },
+                    ],
+                },
+            ],
+        },
     ]
 
     for category_data in category_definitions:
         category = WorkflowCategory.query.filter_by(name=category_data['name']).first()
         if not category:
-            category = WorkflowCategory(
+            category = make_model(
+                WorkflowCategory,
                 name=category_data['name'],
                 icon=category_data['icon'],
                 description=category_data['description'],
@@ -572,7 +740,8 @@ def seed_categories():
             ).first()
 
             if not subcategory:
-                subcategory = SubCategory(
+                subcategory = make_model(
+                    SubCategory,
                     category_id=category.id,
                     name=subcategory_data['name'],
                     description=subcategory_data['description'],
@@ -589,13 +758,16 @@ def seed_categories():
                 ).first()
 
                 if not existing_template:
-                    db.session.add(TaskTemplate(
-                        subcategory_id=subcategory.id,
-                        title=template_data['title'],
-                        description=template_data['description'],
-                        example_input=template_data['example_input'],
-                        tags=template_data['tags'],
-                    ))
+                    db.session.add(
+                        make_model(
+                            TaskTemplate,
+                            subcategory_id=subcategory.id,
+                            title=template_data['title'],
+                            description=template_data['description'],
+                            example_input=template_data['example_input'],
+                            tags=template_data['tags'],
+                        )
+                    )
                 else:
                     existing_template.description = template_data['description']
                     existing_template.example_input = template_data['example_input']
@@ -609,6 +781,256 @@ def seed_extended_data():
     first_tool = Tool.query.first()
     first_skill = Skill.query.first()
 
+    supplemental_tools = [
+        {
+            'name': 'Notion',
+            'category': 'Planung & Organisation',
+            'url': 'https://www.notion.so',
+            'notes': 'All-in-One Workspace für Notizen, Projekte und Wissensmanagement.',
+            'is_free': True,
+            'free_tier_details': 'Free Plan mit Kernfunktionen für Einzelpersonen.',
+            'skill_requirement': 'Anfänger',
+            'best_for': 'Aufgabenplanung, Wissensdatenbank, Team-Boards',
+            'prompt_template': 'Erstelle eine klare Struktur für dieses Projekt in Notion: {{task}}',
+        },
+        {
+            'name': 'Trello',
+            'category': 'Planung & Organisation',
+            'url': 'https://trello.com',
+            'notes': 'Kanban-Boards für Aufgabenverwaltung und Teamarbeit.',
+            'is_free': True,
+            'free_tier_details': 'Kostenloser Einstieg mit Boards und Basis-Automation.',
+            'skill_requirement': 'Anfänger',
+            'best_for': 'Kanban-Workflows und Priorisierung',
+            'prompt_template': 'Brich folgende Aufgabe in Trello-Karten auf: {{task}}',
+        },
+        {
+            'name': 'Google Scholar',
+            'category': 'Internet-Recherche',
+            'url': 'https://scholar.google.com',
+            'notes': 'Wissenschaftliche Suche mit Zitaten und verwandten Arbeiten.',
+            'is_free': True,
+            'free_tier_details': 'Kostenlose Suche, Volltexte abhängig von Quelle.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Facharbeiten, wissenschaftliche Quellen',
+            'prompt_template': 'Gib mir Suchphrasen für Google Scholar zu: {{task}}',
+        },
+        {
+            'name': 'Semantic Scholar',
+            'category': 'Internet-Recherche',
+            'url': 'https://www.semanticscholar.org',
+            'notes': 'KI-gestützte Paper-Suche und Themenüberblick.',
+            'is_free': True,
+            'free_tier_details': 'Kostenlos nutzbar.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Schneller Einstieg in Forschungsthemen',
+            'prompt_template': 'Formuliere eine Suchstrategie für Semantic Scholar: {{task}}',
+        },
+        {
+            'name': 'Connected Papers',
+            'category': 'Internet-Recherche',
+            'url': 'https://www.connectedpapers.com',
+            'notes': 'Visualisiert Forschungszusammenhänge zwischen Publikationen.',
+            'is_free': True,
+            'free_tier_details': 'Kostenloser Basiszugang.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Themenkartierung und Literaturüberblick',
+            'prompt_template': 'Erstelle eine Literatur-Karte mit Fokus auf: {{task}}',
+        },
+        {
+            'name': 'Obsidian',
+            'category': 'Mitschreiben & Dokumente',
+            'url': 'https://obsidian.md',
+            'notes': 'Lokales Wissensmanagement mit verlinkten Notizen.',
+            'is_free': True,
+            'free_tier_details': 'Private Nutzung kostenlos.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Lernnotizen, vernetztes Denken',
+            'prompt_template': 'Strukturiere meine Notizen als Obsidian-Outline: {{task}}',
+        },
+        {
+            'name': 'Miro',
+            'category': 'Schulprojekte',
+            'url': 'https://miro.com',
+            'notes': 'Virtuelles Whiteboard für Brainstorming und Teamplanung.',
+            'is_free': True,
+            'free_tier_details': 'Kostenlose Basisversion verfügbar.',
+            'skill_requirement': 'Anfänger',
+            'best_for': 'Teamideen, Projektmapping',
+            'prompt_template': 'Erstelle ein Miro-Board-Konzept für: {{task}}',
+        },
+        {
+            'name': 'Excalidraw',
+            'category': 'Design & Präsentation',
+            'url': 'https://excalidraw.com',
+            'notes': 'Schnelle Skizzen und Diagramme im Handdrawn-Stil.',
+            'is_free': True,
+            'free_tier_details': 'Kostenlos im Browser.',
+            'skill_requirement': 'Anfänger',
+            'best_for': 'Ablaufdiagramme, Ideenskizzen',
+            'prompt_template': 'Plane ein Excalidraw-Diagramm für diesen Prozess: {{task}}',
+        },
+        {
+            'name': 'Mermaid Live Editor',
+            'category': 'Programmierung',
+            'url': 'https://mermaid.live',
+            'notes': 'Textbasiertes Erstellen von Fluss- und Architekturdiagrammen.',
+            'is_free': True,
+            'free_tier_details': 'Kostenlos nutzbar.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Systemdesign und Prozessvisualisierung',
+            'prompt_template': 'Erzeuge ein Mermaid-Diagramm-Skript für: {{task}}',
+        },
+        {
+            'name': 'Khan Academy',
+            'category': 'Lernen & Schule',
+            'url': 'https://www.khanacademy.org',
+            'notes': 'Kostenlose Lernplattform mit Mathe- und Naturwissenschaftskursen.',
+            'is_free': True,
+            'free_tier_details': 'Komplett kostenlos für Lernende.',
+            'skill_requirement': 'Anfänger',
+            'best_for': 'Grundlagen lernen und üben',
+            'prompt_template': 'Baue einen Lernplan mit Khan Academy für: {{task}}',
+        },
+        {
+            'name': 'GeoGebra',
+            'category': 'Mathe & Wissenschaft',
+            'url': 'https://www.geogebra.org',
+            'notes': 'Interaktive Mathematik-Visualisierung für Schule und Studium.',
+            'is_free': True,
+            'free_tier_details': 'Kostenlos nutzbar.',
+            'skill_requirement': 'Anfänger',
+            'best_for': 'Funktionen, Geometrie, Visualisierungen',
+            'prompt_template': 'Erstelle einen GeoGebra-Plan für dieses Mathethema: {{task}}',
+        },
+        {
+            'name': 'Overleaf',
+            'category': 'Mitschreiben & Dokumente',
+            'url': 'https://www.overleaf.com',
+            'notes': 'Online-LaTeX-Editor für wissenschaftliche Dokumente.',
+            'is_free': True,
+            'free_tier_details': 'Free Plan mit Basisfunktionen.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Facharbeiten und wissenschaftliches Schreiben',
+            'prompt_template': 'Erzeuge eine LaTeX-Dokumentstruktur für: {{task}}',
+        },
+        {
+            'name': 'Gamma',
+            'category': 'Design & Präsentation',
+            'url': 'https://gamma.app',
+            'notes': 'KI-unterstützte Erstellung moderner Präsentationen.',
+            'is_free': True,
+            'free_tier_details': 'Kostenloser Einstieg verfügbar.',
+            'skill_requirement': 'Anfänger',
+            'best_for': 'Schnelle Präsentationsentwürfe',
+            'prompt_template': 'Erstelle eine Präsentationsstruktur in Gamma für: {{task}}',
+        },
+        {
+            'name': 'Figma',
+            'category': 'Design & Präsentation',
+            'url': 'https://www.figma.com',
+            'notes': 'UI/UX-Design und kollaboratives Prototyping.',
+            'is_free': True,
+            'free_tier_details': 'Kostenlose Starter-Version.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Prototypen, Interface-Layouts',
+            'prompt_template': 'Skizziere ein UI-Konzept in Figma für: {{task}}',
+        },
+        {
+            'name': 'GitHub',
+            'category': 'Programmierung',
+            'url': 'https://github.com',
+            'notes': 'Versionskontrolle und kollaborative Softwareentwicklung.',
+            'is_free': True,
+            'free_tier_details': 'Kostenlos mit privaten Repositories.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Codeverwaltung und Teamarbeit',
+            'prompt_template': 'Plane Commits und Branches für dieses Projekt: {{task}}',
+        },
+        {
+            'name': 'GitHub Projects',
+            'category': 'Planung & Organisation',
+            'url': 'https://github.com/features/issues',
+            'notes': 'Task-Tracking direkt im Entwicklerworkflow.',
+            'is_free': True,
+            'free_tier_details': 'In GitHub-Plan enthalten.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Backlog, Sprintplanung, Aufgabenstatus',
+            'prompt_template': 'Erstelle ein Issue-Board für folgende Roadmap: {{task}}',
+        },
+        {
+            'name': 'Loom',
+            'category': 'Kommunikation',
+            'url': 'https://www.loom.com',
+            'notes': 'Kurze Erklärvideos für asynchrone Kommunikation.',
+            'is_free': True,
+            'free_tier_details': 'Kostenloser Plan mit Basisgrenzen.',
+            'skill_requirement': 'Anfänger',
+            'best_for': 'Erklärungen, Projekt-Updates',
+            'prompt_template': 'Schreibe ein 90-Sekunden-Skript für ein Loom-Update zu: {{task}}',
+        },
+        {
+            'name': 'Calendly',
+            'category': 'Kommunikation',
+            'url': 'https://calendly.com',
+            'notes': 'Terminabstimmung ohne E-Mail-Pingpong.',
+            'is_free': True,
+            'free_tier_details': 'Kostenloser Basisplan.',
+            'skill_requirement': 'Anfänger',
+            'best_for': 'Meetingplanung und Verfügbarkeiten',
+            'prompt_template': 'Formuliere eine klare Terminanfrage für: {{task}}',
+        },
+        {
+            'name': 'Airtable',
+            'category': 'Planung & Organisation',
+            'url': 'https://airtable.com',
+            'notes': 'Flexible Tabellen-Datenbank für Projekte und Prozesse.',
+            'is_free': True,
+            'free_tier_details': 'Free Plan mit Basislimits.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Datenübersichten und Projekttracking',
+            'prompt_template': 'Entwirf ein Airtable-Schema für: {{task}}',
+        },
+        {
+            'name': 'HubSpot CRM',
+            'category': 'Business & Selbstständigkeit',
+            'url': 'https://www.hubspot.com/products/crm',
+            'notes': 'CRM für Kontaktverwaltung und Vertriebsprozesse.',
+            'is_free': True,
+            'free_tier_details': 'Kostenloses CRM verfügbar.',
+            'skill_requirement': 'Fortgeschritten',
+            'best_for': 'Lead-Tracking und Kundenkommunikation',
+            'prompt_template': 'Definiere einen einfachen CRM-Prozess für: {{task}}',
+        },
+        {
+            'name': 'Canva Resume Builder',
+            'category': 'Bewerbung & Portfolio',
+            'url': 'https://www.canva.com/resumes/',
+            'notes': 'Schneller Lebenslauf-Builder mit modernen Vorlagen.',
+            'is_free': True,
+            'free_tier_details': 'Viele Vorlagen im Free-Plan.',
+            'skill_requirement': 'Anfänger',
+            'best_for': 'Lebenslauf und Portfolio-Layout',
+            'prompt_template': 'Erstelle eine klare CV-Struktur für dieses Profil: {{task}}',
+        },
+    ]
+
+    for tool_data in supplemental_tools:
+        existing_tool = Tool.query.filter_by(name=tool_data['name']).first()
+        if not existing_tool:
+            existing_tool = Tool()
+            db.session.add(existing_tool)
+
+        existing_tool.name = tool_data['name']
+        existing_tool.category = tool_data['category']
+        existing_tool.url = tool_data['url']
+        existing_tool.notes = tool_data['notes']
+        existing_tool.is_free = bool(tool_data['is_free'])
+        existing_tool.free_tier_details = tool_data['free_tier_details']
+        existing_tool.skill_requirement = tool_data['skill_requirement']
+        existing_tool.best_for = tool_data['best_for']
+        existing_tool.prompt_template = tool_data['prompt_template']
+
     if first_tool and first_tool.free_tier_details is None:
         first_tool.is_free = True
         first_tool.free_tier_details = 'Kostenlos nutzbare Basisversion verfügbar.'
@@ -618,14 +1040,16 @@ def seed_extended_data():
 
     if first_tool and ToolUsageLog.query.first() is None:
         db.session.add_all([
-            ToolUsageLog(
+            make_model(
+                ToolUsageLog,
                 tool_id=first_tool.id,
                 task_description='Titelbild für eine Biologie-Präsentation erstellen',
                 rating=4,
                 timestamp=datetime.utcnow() - timedelta(days=2),
                 was_helpful=True,
             ),
-            ToolUsageLog(
+            make_model(
+                ToolUsageLog,
                 tool_id=first_tool.id,
                 task_description='Recherche-Workflow für Facharbeit planen',
                 rating=5,
@@ -636,14 +1060,16 @@ def seed_extended_data():
 
     if PromptTemplate.query.first() is None:
         db.session.add_all([
-            PromptTemplate(
+            make_model(
+                PromptTemplate,
                 title='Recherche Zusammenfassung',
                 prompt_text='Fasse die wichtigsten Fakten zu {{thema}} in 8 Stichpunkten mit Quellenangaben zusammen.',
                 category='Recherche',
                 tool_id=first_tool.id if first_tool else None,
                 use_count=3,
             ),
-            PromptTemplate(
+            make_model(
+                PromptTemplate,
                 title='Lernkarten Generator',
                 prompt_text='Erstelle aus folgendem Stoff 15 Frage-Antwort-Lernkarten: {{stoff}}',
                 category='Lernen',
@@ -654,12 +1080,14 @@ def seed_extended_data():
 
     if WorkflowHistory.query.first() is None:
         db.session.add_all([
-            WorkflowHistory(
+            make_model(
+                WorkflowHistory,
                 task_description='Vorbereitung Mathe-Klausur',
                 recommendation_json='{"workflow": ["Themen sortieren", "Übungen lösen", "Fehleranalyse"]}',
                 user_rating=4,
             ),
-            WorkflowHistory(
+            make_model(
+                WorkflowHistory,
                 task_description='Infografik für Geographie',
                 recommendation_json='{"workflow": ["Inhalte recherchieren", "Layout in Canva", "Finale Prüfung"]}',
                 user_rating=5,
@@ -668,26 +1096,29 @@ def seed_extended_data():
 
     if UserPreference.query.first() is None:
         db.session.add_all([
-            UserPreference(key='preferred_language', value='de'),
-            UserPreference(key='difficulty_level', value='mittel'),
-            UserPreference(key='focus_areas', value='Mathe, Recherche, Präsentation'),
+            make_model(UserPreference, key='preferred_language', value='de'),
+            make_model(UserPreference, key='difficulty_level', value='mittel'),
+            make_model(UserPreference, key='focus_areas', value='Mathe, Recherche, Präsentation'),
         ])
 
     if first_skill and SkillProgress.query.first() is None:
         db.session.add_all([
-            SkillProgress(
+            make_model(
+                SkillProgress,
                 skill_id=first_skill.id,
                 date=date.today() - timedelta(days=14),
                 level='Anfänger',
                 note='Grundlagen wiederholt',
             ),
-            SkillProgress(
+            make_model(
+                SkillProgress,
                 skill_id=first_skill.id,
                 date=date.today() - timedelta(days=7),
                 level='Fortgeschritten',
                 note='Übungsaufgaben sicher gelöst',
             ),
-            SkillProgress(
+            make_model(
+                SkillProgress,
                 skill_id=first_skill.id,
                 date=date.today(),
                 level='Fortgeschritten',
