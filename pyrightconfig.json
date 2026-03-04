@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/pyright/main/packages/pyright/schema/pyrightconfig.schema.json",
+  "include": [
+    "backend",
+    "scripts"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "scripts",
+      "extraPaths": [
+        "backend"
+      ]
+    },
+    {
+      "root": "backend"
+    }
+  ]
+}

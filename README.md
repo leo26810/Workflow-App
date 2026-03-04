@@ -60,12 +60,14 @@ cd backend
 cp .env.example .env
 ```
 
-Optional bei Port-Konflikten in `.env`:
+Optional bei Port-Konflikten in der Projekt-Root `.env` (für Docker Compose-Variablen):
 
 ```env
 BACKEND_PORT=5001
 FRONTEND_PORT=5174
 ```
+
+Hinweis: `backend/.env` ist für Backend-Variablen wie `GROQ_API_KEY`.
 
 2) Container bauen und starten
 
@@ -99,3 +101,16 @@ docker compose down -v
 
 - Ohne `GROQ_API_KEY` läuft die App im Demo-Modus (Fallback-Empfehlungen).
 - Die Datenbank wird als SQLite-Datei gespeichert (in Docker als persistentes Volume).
+
+## Wartungs-Skripte
+
+Alle Kontroll-/Import-/Cleanup-Skripte liegen zentral im Ordner `scripts/`:
+
+```bash
+python scripts/project_status.py
+python scripts/cleanup_db.py
+python scripts/import_all_data.py
+python scripts/import_tools.py
+```
+
+Hinweis: Die ursprünglichen Seed-JSON-Dateien wurden nach dem Import entfernt. Die Import-Skripte laufen weiterhin und überspringen fehlende Dateien sauber.

@@ -7,13 +7,29 @@ import os
 import json
 import time
 import threading
+from datetime import datetime
 import requests
 from functools import lru_cache, wraps
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_compress import Compress
 from dotenv import load_dotenv
-from models import db, User, Skill, Goal, Tool, WorkflowHistory, seed_extended_data
+from models import (
+    db,
+    User,
+    Skill,
+    Goal,
+    Tool,
+    ToolUsageLog,
+    WorkflowHistory,
+    WorkflowCategory,
+    SubCategory,
+    TaskTemplate,
+    UserContext,
+    ResearchSession,
+    SchoolProject,
+    seed_extended_data,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, '.env'))
@@ -29,7 +45,9 @@ CORS(app, origins=[origin.strip() for origin in cors_origins.split(',') if origi
 # Datenbank-Konfiguration (SQLite)
 database_url = os.environ.get('DATABASE_URL')
 if not database_url:
-    database_url = 'sqlite:///instance/workflow.db'
+    default_sqlite_path = os.path.join(BASE_DIR, 'instance', 'workflow.db')
+    normalized_sqlite_path = default_sqlite_path.replace('\\', '/')
+    database_url = f"sqlite:///{normalized_sqlite_path}"
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -332,6 +350,202 @@ def update_profile():
     return jsonify({'error': 'Unbekannte Aktion'}), 400
 
 
+@app.route('/api/categories', methods=['GET'])
+def get_categories():
+    """Gibt alle WorkflowCategories mit SubCategories und TaskTemplates zurück."""
+    categories = WorkflowCategory.query.order_by(WorkflowCategory.id.asc()).all()
+    payload = []
+
+    for category in categories:
+        category_payload = category.to_dict()
+        category_payload['subcategories'] = []
+
+        subcategories = SubCategory.query.filter_by(category_id=category.id).order_by(SubCategory.id.asc()).all()
+        for subcategory in subcategories:
+            sub_payload = subcategory.to_dict()
+            templates = TaskTemplate.query.filter_by(subcategory_id=subcategory.id).order_by(TaskTemplate.id.asc()).all()
+            sub_payload['task_templates'] = [template.to_dict() for template in templates]
+            category_payload['subcategories'].append(sub_payload)
+
+        payload.append(category_payload)
+
+    return jsonify(payload)
+
+
+@app.route('/api/task-templates', methods=['GET'])
+def get_task_templates():
+    """Gibt Templates für eine Unterkategorie zurück."""
+    subcategory_name = (request.args.get('subcategory') or '').strip()
+    if not subcategory_name:
+        return jsonify({'error': 'Parameter subcategory fehlt'}), 400
+
+    subcategory = SubCategory.query.filter_by(name=subcategory_name).first()
+    if not subcategory:
+        return jsonify({'error': 'Unterkategorie nicht gefunden'}), 404
+
+    templates = TaskTemplate.query.filter_by(subcategory_id=subcategory.id).order_by(TaskTemplate.id.asc()).all()
+    return jsonify({
+        'subcategory': subcategory.name,
+        'templates': [template.to_dict() for template in templates]
+    })
+
+
+@app.route('/api/research-session', methods=['POST'])
+def create_research_session():
+    """Speichert eine Recherche-Session (query, sources, summary)."""
+    data = request.get_json() or {}
+
+    query = (data.get('query') or '').strip()
+    sources = data.get('sources')
+    summary = (data.get('summary') or '').strip()
+    tags = (data.get('tags') or '').strip()
+
+    if not query:
+        return jsonify({'error': 'query ist erforderlich'}), 400
+    if not isinstance(sources, list):
+        return jsonify({'error': 'sources muss ein JSON-Array sein'}), 400
+
+    session = ResearchSession(
+        query=query,
+        sources=sources,
+        summary=summary,
+        tags=tags,
+    )
+    db.session.add(session)
+    db.session.commit()
+
+    return jsonify({'success': True, 'session': session.to_dict()})
+
+
+@app.route('/api/research-sessions', methods=['GET'])
+def get_research_sessions():
+    """Gibt alle gespeicherten Recherche-Sessions zurück."""
+    sessions = db.session.query(ResearchSession).order_by(ResearchSession.created_at.desc()).all()
+    return jsonify([session.to_dict() for session in sessions])
+
+
+@app.route('/api/school-projects', methods=['GET'])
+def get_school_projects():
+    """Gibt alle Schulprojekte zurück."""
+    projects = SchoolProject.query.order_by(SchoolProject.created_at.desc()).all()
+    return jsonify([project.to_dict() for project in projects])
+
+
+@app.route('/api/school-projects', methods=['POST'])
+def upsert_school_project():
+    """Projekt anlegen/bearbeiten/löschen über action=add|update|delete."""
+    data = request.get_json(silent=True) or {}
+    action = (data.get('action') or '').strip().lower()
+
+    if action == 'add':
+        deadline_value = (data.get('deadline') or '').strip()
+        deadline = None
+        if deadline_value:
+            try:
+                deadline = datetime.strptime(deadline_value, '%Y-%m-%d').date()
+            except ValueError:
+                return jsonify({'error': 'deadline muss YYYY-MM-DD sein'}), 400
+
+        project = SchoolProject(
+            title=(data.get('title') or '').strip(),
+            subject=(data.get('subject') or '').strip(),
+            deadline=deadline,
+            status=(data.get('status') or 'offen').strip() or 'offen',
+            description=(data.get('description') or '').strip(),
+            notes=(data.get('notes') or '').strip(),
+        )
+        if not project.title or not project.subject:
+            return jsonify({'error': 'title und subject sind erforderlich'}), 400
+
+        db.session.add(project)
+        db.session.commit()
+        return jsonify({'success': True, 'project': project.to_dict()})
+
+    if action == 'update':
+        project_id = data.get('id')
+        try:
+            project_id = int(project_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'id muss numerisch sein'}), 400
+
+        project = SchoolProject.query.get(project_id)
+        if not project:
+            return jsonify({'error': 'Projekt nicht gefunden'}), 404
+
+        if 'title' in data:
+            project.title = (data.get('title') or '').strip()
+        if 'subject' in data:
+            project.subject = (data.get('subject') or '').strip()
+        if 'status' in data:
+            project.status = (data.get('status') or 'offen').strip() or 'offen'
+        if 'description' in data:
+            project.description = (data.get('description') or '').strip()
+        if 'notes' in data:
+            project.notes = (data.get('notes') or '').strip()
+        if 'deadline' in data:
+            deadline_value = (data.get('deadline') or '').strip()
+            if deadline_value:
+                try:
+                    project.deadline = datetime.strptime(deadline_value, '%Y-%m-%d').date()
+                except ValueError:
+                    return jsonify({'error': 'deadline muss YYYY-MM-DD sein'}), 400
+            else:
+                project.deadline = None
+
+        if not project.title or not project.subject:
+            return jsonify({'error': 'title und subject dürfen nicht leer sein'}), 400
+
+        db.session.commit()
+        return jsonify({'success': True, 'project': project.to_dict()})
+
+    if action == 'delete':
+        project_id = data.get('id')
+        try:
+            project_id = int(project_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'id muss numerisch sein'}), 400
+
+        project = SchoolProject.query.get(project_id)
+        if not project:
+            return jsonify({'error': 'Projekt nicht gefunden'}), 404
+
+        db.session.delete(project)
+        db.session.commit()
+        return jsonify({'success': True, 'id': project_id})
+
+    return jsonify({'error': 'Unbekannte action. Erlaubt: add, update, delete'}), 400
+
+
+@app.route('/api/user-context', methods=['GET'])
+def get_user_context():
+    """Gibt den kompletten UserContext zurück."""
+    context_items = UserContext.query.order_by(UserContext.area.asc(), UserContext.key.asc()).all()
+    return jsonify([item.to_dict() for item in context_items])
+
+
+@app.route('/api/user-context', methods=['POST'])
+def set_user_context():
+    """Setzt Key-Value Paare im UserContext (area + key + value)."""
+    data = request.get_json() or {}
+
+    area = (data.get('area') or '').strip()
+    key = (data.get('key') or '').strip()
+    value = data.get('value')
+
+    if not area or not key:
+        return jsonify({'error': 'area und key sind erforderlich'}), 400
+
+    context_item = UserContext.query.filter_by(area=area, key=key).first()
+    if not context_item:
+        context_item = UserContext(area=area, key=key, value='' if value is None else str(value))
+        db.session.add(context_item)
+    else:
+        context_item.value = '' if value is None else str(value)
+
+    db.session.commit()
+    return jsonify({'success': True, 'item': context_item.to_dict()})
+
+
 LEVEL_RANK = {
     'Anfänger': 1,
     'Fortgeschritten': 2,
@@ -360,6 +574,30 @@ TYPE_CATEGORY_HINTS = {
     'TRANSLATION': ['übersetzung', 'text'],
 }
 
+AREA_KEYWORDS = {
+    'ki_bild': ['bild', 'logo', 'foto', 'illustration', 'zeichnung', 'banner', 'thumbnail', 'poster'],
+    'ki_code': ['code', 'programmier', 'script', 'python', 'javascript', 'bug', 'funktion', 'app'],
+    'ki_prompt': ['prompt', 'anweisung', 'chatgpt', 'claude', 'formulier'],
+    'ki_analyse': ['zusammenfassung', 'analysier', 'erkläre', 'versteh', 'übersetz', 'bewert'],
+    'recherche_bild': ['bild suchen', 'foto finden', 'stock', 'bildquelle'],
+    'recherche_info': ['recherche', 'informationen', 'suche', 'quellen', 'fakten', 'wer ist', 'was ist'],
+    'schule_docs': ['mitschreiben', 'notizen', 'dokument', 'aufsatz', 'essay', 'referat', 'facharbeit'],
+    'schule_projekt': ['schulprojekt', 'präsentation', 'vortrag', 'hausaufgabe', 'abgabe'],
+    'schule_lernen': ['lernen', 'üben', 'vorbereitung', 'klausur', 'prüfung', 'wiederholen', 'karteikarten']
+}
+
+AREA_MAPPING = {
+    'ki_bild': ('KI-Verwendung', 'Bilderstellung'),
+    'ki_code': ('KI-Verwendung', 'Programmierung'),
+    'ki_prompt': ('KI-Verwendung', 'Promptgeneration'),
+    'ki_analyse': ('KI-Verwendung', 'Analysen & Zusammenfassung'),
+    'recherche_bild': ('Internet-Recherche', 'Bildersuche'),
+    'recherche_info': ('Internet-Recherche', 'Informationsrecherche'),
+    'schule_docs': ('Schule', 'Mitschreiben & Dokumente'),
+    'schule_projekt': ('Schule', 'Schulprojekte'),
+    'schule_lernen': ('Schule', 'Lernen & Üben'),
+}
+
 
 def classify_task(task_text: str) -> dict:
     lowered = (task_text or '').lower()
@@ -375,14 +613,106 @@ def classify_task(task_text: str) -> dict:
     if any(token in lowered for token in ['folien', 'slides', 'pitch deck']):
         scores['PRESENTATION'] += 1
 
+    area_scores = {}
+    for area_key, keywords in AREA_KEYWORDS.items():
+        hits = sum(1 for keyword in keywords if keyword in lowered)
+        area_scores[area_key] = hits
+
+    best_area_key = max(area_scores, key=lambda key: area_scores[key]) if area_scores else None
+    best_area_score = area_scores.get(best_area_key, 0) if best_area_key else 0
+
     best_type = max(scores, key=lambda key: scores[key]) if scores else 'GENERAL'
     best_score = scores.get(best_type, 0)
 
     if best_score <= 0:
-        return {'type': 'GENERAL', 'confidence': 0.25}
+        return {
+            'type': 'GENERAL',
+            'confidence': 0.25,
+            'area_key': 'schule_lernen',
+            'area': 'Schule',
+            'subcategory': 'Lernen & Üben',
+        }
 
     confidence = min(1.0, 0.35 + 0.13 * best_score)
-    return {'type': best_type, 'confidence': round(confidence, 2)}
+    if best_area_score <= 0 or best_area_key not in AREA_MAPPING:
+        best_area_key = 'schule_lernen'
+
+    area_name, subcategory_name = AREA_MAPPING.get(best_area_key, ('Schule', 'Lernen & Üben'))
+    return {
+        'type': best_type,
+        'confidence': round(confidence, 2),
+        'area_key': best_area_key,
+        'area': area_name,
+        'subcategory': subcategory_name,
+    }
+
+
+def get_specialized_sub_prompt(area_key: str) -> str:
+    specialized_prompts = {
+        'ki_bild': (
+            'Spezialfokus KI-Bild: Erstelle konkrete Prompt-Bausteine für Bildgeneratoren inkl. Style-Keywords, '\
+            'Komposition, Licht, Kamera/Perspektive und negative prompts.'
+        ),
+        'ki_code': (
+            'Spezialfokus KI-Code: Liefere Debugging-Schritte, Erklärungen in Lernreihenfolge, Testideen und nenne passende '\
+            'KI-Tools für Code-Unterstützung.'
+        ),
+        'ki_prompt': (
+            'Spezialfokus Promptgeneration: Formuliere präzise Prompt-Frameworks mit Ziel, Kontext, Output-Format und Qualitätskriterien.'
+        ),
+        'ki_analyse': (
+            'Spezialfokus Analyse/Zusammenfassung: Gib Struktur für Zusammenfassungen, zentrale Kriterien und verständliche Erklärstufen.'
+        ),
+        'recherche_bild': (
+            'Spezialfokus Recherche-Bild: Zeige Suchstrategie für Bildquellen, Lizenzprüfung und richtige Quellenangabe.'
+        ),
+        'recherche_info': (
+            'Spezialfokus Recherche-Info: Zeige Suchstrategie, Query-Varianten, Quellenbewertung und welche Suchmaschinen wofür geeignet sind.'
+        ),
+        'schule_docs': (
+            'Spezialfokus Schule-Dokumente: Arbeite mit klarer Gliederung, sauberer Formatierung und passendem Zitierstil.'
+        ),
+        'schule_projekt': (
+            'Spezialfokus Schule-Projekt: Baue Zeitplanung mit Meilensteinen, Aufgabenaufteilung im Team und Präsentationstipps ein.'
+        ),
+        'schule_lernen': (
+            'Spezialfokus Schule-Lernen: Nutze Lernmethoden wie Pomodoro, Spaced Repetition und Lernkarten-Generierung.'
+        ),
+    }
+    return specialized_prompts.get(area_key, specialized_prompts['schule_lernen'])
+
+
+def get_templates_for_subcategory(subcategory_name: str, limit: int = 5):
+    subcategory = SubCategory.query.filter_by(name=subcategory_name).first()
+    if not subcategory:
+        return []
+    templates = TaskTemplate.query.filter_by(subcategory_id=subcategory.id).order_by(TaskTemplate.id.asc()).limit(limit).all()
+    return [template.to_dict() for template in templates]
+
+
+def get_user_context_key_map() -> dict:
+    key_map = {}
+    context_items = UserContext.query.order_by(UserContext.area.asc(), UserContext.key.asc()).all()
+    for item in context_items:
+        key_map[item.key] = item.value
+    return key_map
+
+
+def get_frequently_used_tools(limit: int = 3) -> list[str]:
+    rows = (
+        db.session.query(Tool.name, db.func.count(ToolUsageLog.id).label('usage_count'))
+        .join(ToolUsageLog, ToolUsageLog.tool_id == Tool.id)
+        .group_by(Tool.id, Tool.name)
+        .order_by(db.func.count(ToolUsageLog.id).desc())
+        .limit(limit)
+        .all()
+    )
+    return [row.name for row in rows]
+
+
+def get_low_rated_tools() -> list[str]:
+    tools = Tool.query.filter(Tool.rating.isnot(None), Tool.rating < 3).order_by(Tool.rating.asc()).all()
+    return [tool.name for tool in tools]
 
 
 @ttl_cache(ttl_seconds=300)
@@ -566,6 +896,18 @@ def normalize_recommendation_payload(recommendation: dict, task_description: str
     if not estimated_time:
         estimated_time = '30–60 Minuten'
 
+    why_these_tools = recommendation.get('why_these_tools') if isinstance(recommendation, dict) else None
+    if not why_these_tools:
+        why_these_tools = 'Die Tools passen zu Aufgabe, Skill-Level und bisherigen positiven Bewertungen.'
+
+    skill_gap = recommendation.get('skill_gap') if isinstance(recommendation, dict) else None
+    if not skill_gap:
+        skill_gap = 'Vertiefe die Nutzung fortgeschrittener Prompt-Strategien und Qualitätskontrolle der Ergebnisse.'
+
+    for tool_entry in recommended_tools:
+        if not tool_entry.get('specific_tip'):
+            tool_entry['specific_tip'] = 'Starte mit einem kleinen Test-Output und verfeinere anschließend iterativ.'
+
     return {
         'workflow': workflow,
         'recommended_tools': recommended_tools,
@@ -574,6 +916,8 @@ def normalize_recommendation_payload(recommendation: dict, task_description: str
         'estimated_time': estimated_time,
         'difficulty': difficulty,
         'alternative_approach': alternative_approach,
+        'why_these_tools': why_these_tools,
+        'skill_gap': skill_gap,
     }
 
 
@@ -590,6 +934,8 @@ def generate_generic_help_recommendation(task_description: str) -> dict:
         'estimated_time': '20–45 Minuten',
         'difficulty': 'easy',
         'alternative_approach': 'Arbeite ohne KI mit einem klaren 3-Schritte-Plan und einer Checkliste.',
+        'why_these_tools': 'Kein spezifisches Tool-Match verfügbar, daher neutraler Vorgehensplan.',
+        'skill_gap': 'Baue systematische Aufgabenanalyse und Prompt-Präzision aus.',
     }
 
 
@@ -597,11 +943,120 @@ def save_workflow_history(task_description: str, recommendation: dict):
     history_entry = WorkflowHistory(
         task_description=task_description,
         recommendation_json=json.dumps(recommendation, ensure_ascii=False),
+        created_at=datetime.utcnow(),
         user_rating=None,
     )
     db.session.add(history_entry)
     db.session.commit()
     get_tool_scores.cache_clear()
+    return history_entry.id
+
+
+def estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def build_personalized_context():
+    skills = Skill.query.order_by(Skill.id.asc()).all()
+    goals = Goal.query.order_by(Goal.id.asc()).all()
+    history_entries = WorkflowHistory.query.order_by(WorkflowHistory.created_at.desc()).limit(5).all()
+
+    top_tool_rows = (
+        db.session.query(
+            Tool.id,
+            Tool.name,
+            db.func.avg(ToolUsageLog.rating).label('avg_rating')
+        )
+        .join(ToolUsageLog, ToolUsageLog.tool_id == Tool.id)
+        .group_by(Tool.id, Tool.name)
+        .having(db.func.avg(ToolUsageLog.rating) > 3.5)
+        .order_by(db.func.avg(ToolUsageLog.rating).desc())
+        .all()
+    )
+
+    user_context_items = UserContext.query.order_by(UserContext.area.asc(), UserContext.key.asc()).all()
+
+    tools = Tool.query.order_by(Tool.id.asc()).all()
+
+    skills_with_level = [f"{skill.name} ({skill.level})" for skill in skills]
+    goals_list = [goal.description for goal in goals]
+
+    history_payload = []
+    avoid_tools = set()
+    for entry in history_entries:
+        item = {
+            'task': entry.task_description,
+            'user_rating': entry.user_rating,
+            'created_at': entry.created_at.isoformat() if entry.created_at else None,
+        }
+        history_payload.append(item)
+
+        if entry.user_rating is not None and entry.user_rating < 3:
+            try:
+                recommendation_data = json.loads(entry.recommendation_json or '{}')
+            except json.JSONDecodeError:
+                recommendation_data = {}
+
+            for recommended_tool in recommendation_data.get('recommended_tools', []):
+                if isinstance(recommended_tool, dict):
+                    tool_name = (recommended_tool.get('name') or '').strip()
+                elif isinstance(recommended_tool, str):
+                    tool_name = recommended_tool.strip()
+                else:
+                    tool_name = ''
+                if tool_name:
+                    avoid_tools.add(tool_name)
+
+    top_tools = [
+        {
+            'name': row.name,
+            'avg_rating': round(float(row.avg_rating), 2)
+        }
+        for row in top_tool_rows
+    ]
+
+    tools_structured = []
+    for tool in tools:
+        tools_structured.append({
+            'name': tool.name,
+            'category': tool.category,
+            'best_for': tool.best_for or '',
+            'skill_requirement': tool.skill_requirement or 'Anfänger',
+            'prompt_template': tool.prompt_template or '',
+            'free_tier_details': tool.free_tier_details or '',
+            'url': tool.url or '',
+            'rating': tool.rating,
+        })
+
+    context = {
+        'skills_with_level': skills_with_level,
+        'goals': goals_list,
+        'workflow_history': history_payload,
+        'top_tools': top_tools,
+        'all_tools': tools_structured,
+        'avoid_tools': sorted(avoid_tools),
+        'user_context': [item.to_dict() for item in user_context_items],
+    }
+
+    def build_context_text(payload):
+        return json.dumps(payload, ensure_ascii=False)
+
+    context_text = build_context_text(context)
+    if estimate_tokens(context_text) > 3000:
+        truncated_history = context['workflow_history'][:3]
+        sorted_tools = sorted(
+            context['all_tools'],
+            key=lambda item: (item.get('rating') is not None, item.get('rating') or 0),
+            reverse=True,
+        )
+        truncated_tools = sorted_tools[:20]
+
+        context['workflow_history'] = truncated_history
+        context['all_tools'] = truncated_tools
+
+    return context, skills, goals, tools
 
 
 def generate_fallback_recommendation(task: str, tools: list, skills: list, task_type: str, confidence: float, tool_scores: dict) -> dict:
@@ -699,7 +1154,15 @@ def get_recommendation():
     # Schritt: Identische Requests innerhalb von 60 Sekunden deduplizieren.
     with recommendation_cache_lock:
         existing = recommendation_cache.get(task_key)
-        if existing and now - existing['timestamp'] <= RECOMMENDATION_DEDUP_TTL:
+        if (
+            existing
+            and now - existing['timestamp'] <= RECOMMENDATION_DEDUP_TTL
+            and isinstance(existing.get('payload'), dict)
+            and 'area' in existing['payload']
+            and 'subcategory' in existing['payload']
+            and 'personalization_note' in existing['payload']
+            and 'next_step' in existing['payload']
+        ):
             return jsonify(existing['payload'])
 
         expired_keys = [
@@ -712,101 +1175,202 @@ def get_recommendation():
     classification = classify_task(task_description)
     task_type = classification['type']
     confidence = classification['confidence']
+    area_key = classification.get('area_key', 'schule_lernen')
+    area = classification.get('area', 'Schule')
+    subcategory = classification.get('subcategory', 'Lernen & Üben')
 
-    skills = Skill.query.all()
-    tools = Tool.query.all()
-    goals = Goal.query.all()
+    personalized_context, skills, goals, tools = build_personalized_context()
     tool_scores = get_tool_scores()
+    specialized_sub_prompt = get_specialized_sub_prompt(area_key)
+    templates_for_subcategory = get_templates_for_subcategory(subcategory)
+    user = User.query.first()
+    user_context_map = get_user_context_key_map()
+    low_rated_tools = get_low_rated_tools()
+    frequently_used_tools = get_frequently_used_tools(limit=3)
 
-    skills_text = ', '.join([f"{s.name} ({s.level})" for s in skills]) or "Keine Fähigkeiten angegeben"
-    goals_text = ', '.join([g.description for g in goals]) or "Keine Ziele angegeben"
+    user_name = (user.name if user and user.name else 'Nutzer').strip()
+    main_subjects = user_context_map.get('hauptfaecher') or user_context_map.get('schule_faecher') or 'nicht angegeben'
+    ki_experience = user_context_map.get('ki_erfahrung') or 'nicht angegeben'
+    learning_style = user_context_map.get('lernstil') or 'nicht angegeben'
+
+    skills_text = '\n'.join([f"- {skill}" for skill in personalized_context['skills_with_level']]) or "- Keine Fähigkeiten angegeben"
+    goals_text = '\n'.join([f"- {goal}" for goal in personalized_context['goals']]) or "- Keine Ziele angegeben"
+    top_tools_text = '\n'.join([
+        f"- {item['name']} (Ø Rating: {item['avg_rating']})"
+        for item in personalized_context['top_tools']
+    ]) or "- Keine bevorzugten Tools verfügbar"
+
+    user_context_text = '\n'.join([
+        f"- [{item.get('area')}] {item.get('key')}: {item.get('value')}"
+        for item in personalized_context.get('user_context', [])
+    ]) or '- Kein zusätzlicher Nutzerkontext gespeichert'
+
+    history_text = '\n'.join([
+        f"- Aufgabe: {item['task']} | Rating: {item['user_rating']} | Datum: {item['created_at']}"
+        for item in personalized_context['workflow_history']
+    ]) or "- Kein Verlauf verfügbar"
+
     tools_text = '\n'.join([
-        f"- {t.name} ({t.category}) | Skill: {t.skill_requirement or 'n/a'} | Score: {tool_scores.get(t.name, 1.0)} | URL: {t.url}"
-        for t in tools
-    ]) or "Keine Tools verfügbar"
+        (
+            f"- Name: {item['name']} | Kategorie: {item['category']} | Best for: {item['best_for'] or 'n/a'} "
+            f"| Skill-Requirement: {item['skill_requirement'] or 'n/a'} | Prompt-Template: {item['prompt_template'] or 'n/a'} "
+            f"| Free Tier: {item['free_tier_details'] or 'n/a'} | URL: {item['url'] or 'n/a'} | Rating: {item['rating'] if item['rating'] is not None else 'n/a'}"
+        )
+        for item in personalized_context['all_tools']
+    ]) or "- Keine Tools verfügbar"
 
-    app.logger.info(f"Recommendation request gestartet: task_type={task_type}, confidence={confidence}")
+    avoid_tools_text = ', '.join(personalized_context['avoid_tools']) or 'Keine'
+    low_rated_tools_text = ', '.join(low_rated_tools) or 'Keine'
+    frequently_used_tools_text = ', '.join(frequently_used_tools) or 'Keine'
 
-    system_prompt = """Du bist ein persönlicher Workflow-Optimierungs-Assistent.
-Antworte ausschließlich als valides JSON-Objekt mit exakt diesen Feldern:
-{
-    "workflow": ["Schritt 1", "Schritt 2", "Schritt 3"],
-    "recommended_tools": [
-        {"name": "Tool Name", "reason": "Warum dieses Tool", "url": "https://..."}
-    ],
-    "optimized_prompt": "String",
-    "tips": ["Tipp 1", "Tipp 2"],
-    "estimated_time": "String",
-    "difficulty": "easy|medium|hard",
-    "alternative_approach": "String"
-}
-Kein Fließtext, kein Markdown, nur JSON."""
+    templates_text = '\n'.join([
+        f"- {tpl['title']}: {tpl.get('example_input') or ''}"
+        for tpl in templates_for_subcategory
+    ]) or '- Keine Templates verfügbar'
 
-    user_prompt = f"""Aufgabe: "{task_description}"
-Klassifikation: {task_type} (confidence={confidence})
+    app.logger.info(
+        f"Recommendation request gestartet: task_type={task_type}, area={area}, subcategory={subcategory}, confidence={confidence}"
+    )
 
-Fähigkeiten des Nutzers: {skills_text}
-Aktuelle Ziele: {goals_text}
+    system_prompt = f"""Du bist ein persönlicher KI-Workflow-Coach. Du kennst diesen Nutzer sehr gut:
 
-Verfügbare kostenlose Tools:
+PROFIL:
+- Fähigkeiten:
+{skills_text}
+- Aktuelle Ziele:
+{goals_text}
+- Bevorzugte Tools (gut bewertet):
+{top_tools_text}
+
+VERLAUF (letzte Aufgaben + Bewertungen):
+{history_text}
+
+NUTZER-KONTEXT:
+- Name: {user_name}
+- Schulfächer: {main_subjects}
+- KI-Erfahrung: {ki_experience}
+- Lernstil: {learning_style}
+- Zuletzt schlecht bewertete Tools (nicht empfehlen): {low_rated_tools_text}
+- Häufig genutzte Tools (bevorzugen): {frequently_used_tools_text}
+- Erkannter Bereich dieser Aufgabe: {area} → {subcategory}
+
+ZUSÄTZLICHER NUTZERKONTEXT (aus /api/user-context):
+{user_context_text}
+
+MEIDE DIESE TOOLS (schlecht bewertet im Verlauf): {avoid_tools_text}
+
+VERFÜGBARE TOOL-DATENBANK:
 {tools_text}
 
-Erstelle einen optimierten Workflow für diese Aufgabe. 
-Empfiehl nur Tools aus der obigen Liste wenn sie relevant sind.
-Berücksichtige Skill-Matching: Empfiehl kein Experten-Tool für Anfänger, außer als optionale Challenge.
-Berücksichtige, dass Tools mit niedrigem Score depriorisiert werden sollen.
-Generiere auch einen verbesserten, detaillierten Prompt."""
+PASSENDE TASK-TEMPLATES FÜR {subcategory}:
+{templates_text}
+
+DEINE AUFGABE:
+Analysiere die neue Aufgabe des Nutzers und erstelle einen hyper-personalisierten Workflow.
+- Passe die Komplexität an das Skill-Level an
+- Empfiehl nur Tools, die zum Skill-Level passen (skill_requirement beachten)
+- Lerne aus dem Verlauf: wenn ein Tool schlecht bewertet wurde, meide es
+- Nutze die prompt_templates aus der Datenbank als Basis für den optimized_prompt
+- Sei konkret, nicht generisch — nenne exakte Schritte, exakte Tool-Einstellungen
+- Bereich: {area} | Unterkategorie: {subcategory}
+- Spezialanweisung: {specialized_sub_prompt}
+
+Antworte ausschließlich als JSON:
+{{
+  "workflow": ["Schritt 1", "Schritt 2", "Schritt 3"],
+  "recommended_tools": [{{"name": "", "reason": "", "url": "", "specific_tip": ""}}],
+  "optimized_prompt": "",
+  "tips": [""],
+  "estimated_time": "",
+  "difficulty": "easy|medium|hard",
+  "why_these_tools": "Kurze Begründung warum genau diese Tools für diesen Nutzer",
+        "skill_gap": "Was der Nutzer noch lernen sollte um diese Aufgabe besser zu lösen",
+        "personalization_note": "Ein Satz der erklärt warum diese Empfehlung auf den Nutzer zugeschnitten ist. Beispiel: Da du Mathe als Hauptfach hast und Wolfram Alpha bereits gut bewertet hast, steht es an erster Stelle.",
+        "next_step": "Der allererste konkrete Schritt den der Nutzer JETZT sofort tun soll — ein einziger klarer Satz"
+}}
+Kein Fließtext, kein Markdown, nur JSON."""
+
+    user_prompt = f"""Neue Nutzeraufgabe: "{task_description}"
+Klassifikation: {task_type} (confidence={confidence})
+Erkannter Bereich: {area}
+Erkannte Unterkategorie: {subcategory}
+Spezialmodus: {specialized_sub_prompt}
+
+Bitte liefere eine konkrete, personalisierte Empfehlung gemäß der Systemregeln.
+Nutze nur Tools aus der angegebenen Tool-Datenbank.
+Nutze bevorzugt gut bewertete Tools und vermeide negativ bewertete Tools aus dem Verlauf.
+Falls kein Tool passt, gib trotzdem einen präzisen Workflow mit umsetzbaren Schritten."""
 
     recommendation = None
     mode = 'demo'
+    model_used = None
+    personalization_note = None
+    next_step = None
 
     if GROQ_API_KEY and GROQ_API_KEY != 'dein-groq-api-key-hier':
         try:
             app.logger.info('Recommendation step: trying_groq_api')
-            response = requests.post(
-                GROQ_API_URL,
-                headers={
-                    'Authorization': f'Bearer {GROQ_API_KEY}',
-                    'Content-Type': 'application/json'
-                },
-                json={
-                    'model': 'llama3-8b-8192',  # Kostenloses Llama 3 Modell via Groq
-                    'messages': [
-                        {'role': 'system', 'content': system_prompt},
-                        {'role': 'user', 'content': user_prompt}
-                    ],
-                    'temperature': 0.7,
-                    'max_tokens': 1500
-                },
-                timeout=30
-            )
+            candidate_models = [
+                'llama-3.3-70b-versatile',
+                'llama-3.1-8b-instant',
+                'mixtral-8x7b-32768',
+            ]
 
-            if response.status_code == 200:
-                result = response.json()
-                raw_text = result['choices'][0]['message']['content']
+            for model_name in candidate_models:
+                response = requests.post(
+                    GROQ_API_URL,
+                    headers={
+                        'Authorization': f'Bearer {GROQ_API_KEY}',
+                        'Content-Type': 'application/json'
+                    },
+                    json={
+                        'model': model_name,
+                        'messages': [
+                            {'role': 'system', 'content': system_prompt},
+                            {'role': 'user', 'content': user_prompt}
+                        ],
+                        'temperature': 0.7,
+                        'max_tokens': 1500
+                    },
+                    timeout=30
+                )
 
-                try:
-                    clean = raw_text.strip()
-                    if clean.startswith('```'):
-                        clean = clean.split('```')[1]
-                        if clean.startswith('json'):
-                            clean = clean[4:]
-                    ai_recommendation = json.loads(clean.strip())
-                    recommendation = normalize_recommendation_payload(
-                        recommendation=ai_recommendation,
-                        task_description=task_description,
-                        task_type=task_type,
-                        confidence=confidence,
-                        tools=tools,
-                        skills=skills,
-                        tool_scores=tool_scores,
-                    )
-                    mode = 'ai'
-                    app.logger.info('Recommendation step: groq_success')
-                except json.JSONDecodeError:
-                    app.logger.warning('Recommendation step: groq_invalid_json -> local_fallback')
-            else:
-                app.logger.warning(f'Recommendation step: groq_http_{response.status_code} -> local_fallback')
+                if response.status_code == 200:
+                    result = response.json()
+                    raw_text = result['choices'][0]['message']['content']
+
+                    try:
+                        clean = raw_text.strip()
+                        if clean.startswith('```'):
+                            clean = clean.split('```')[1]
+                            if clean.startswith('json'):
+                                clean = clean[4:]
+                        ai_recommendation = json.loads(clean.strip())
+                        recommendation = normalize_recommendation_payload(
+                            recommendation=ai_recommendation,
+                            task_description=task_description,
+                            task_type=task_type,
+                            confidence=confidence,
+                            tools=tools,
+                            skills=skills,
+                            tool_scores=tool_scores,
+                        )
+                        personalization_note = (ai_recommendation.get('personalization_note') or '').strip() if isinstance(ai_recommendation, dict) else ''
+                        next_step = (ai_recommendation.get('next_step') or '').strip() if isinstance(ai_recommendation, dict) else ''
+                        mode = 'ai'
+                        model_used = model_name
+                        app.logger.info(f'Recommendation step: groq_success model={model_used}')
+                        break
+                    except json.JSONDecodeError:
+                        app.logger.warning(f'Recommendation step: groq_invalid_json model={model_name} -> local_fallback')
+                        break
+
+                if response.status_code in (400, 404):
+                    app.logger.warning(f'Recommendation step: groq_http_{response.status_code} model={model_name} -> trying_next_model')
+                    continue
+
+                app.logger.warning(f'Recommendation step: groq_http_{response.status_code} model={model_name} -> local_fallback')
+                break
         except Exception as e:
             app.logger.exception(f'Recommendation step: groq_exception -> local_fallback ({e})')
 
@@ -822,22 +1386,51 @@ Generiere auch einen verbesserten, detaillierten Prompt."""
                 tool_scores=tool_scores,
             )
             mode = 'demo'
+            model_used = 'fallback_local_rule_based'
         except Exception as fallback_error:
             app.logger.exception(f'Recommendation step: local_fallback_failed -> generic_help ({fallback_error})')
             recommendation = generate_generic_help_recommendation(task_description)
             mode = 'demo'
+            model_used = 'fallback_generic_help'
+
+    if mode == 'ai':
+        if not personalization_note:
+            preferred_tool = frequently_used_tools[0] if frequently_used_tools else (recommendation.get('recommended_tools', [{}])[0].get('name') if recommendation.get('recommended_tools') else 'passende Tools')
+            personalization_note = (
+                f"Da {main_subjects} zu deinen Schwerpunkten zählen, dein KI-Level auf '{ki_experience}' steht "
+                f"und {preferred_tool} häufig gut zu deinem Workflow passt, ist diese Empfehlung darauf zugeschnitten."
+            )
+
+        if not next_step:
+            workflow_steps = recommendation.get('workflow') if isinstance(recommendation, dict) else None
+            if isinstance(workflow_steps, list) and workflow_steps:
+                next_step = workflow_steps[0]
+            else:
+                next_step = 'Formuliere jetzt die Aufgabe präzise in einem Satz und starte mit dem ersten vorgeschlagenen Tool.'
+    else:
+        personalization_note = ''
+        next_step = ''
+
+    recommendation['personalization_note'] = personalization_note
+    recommendation['next_step'] = next_step
+
+    history_id = save_workflow_history(task_description, recommendation)
 
     response_payload = {
         'task': task_description,
         'recommendation': recommendation,
         'mode': mode,
+        'model_used': model_used,
+        'history_id': history_id,
+        'area': area,
+        'subcategory': subcategory,
+        'personalization_note': personalization_note,
+        'next_step': next_step,
         'classification': {
             'type': task_type,
             'confidence': confidence,
         }
     }
-
-    save_workflow_history(task_description, recommendation)
 
     with recommendation_cache_lock:
         recommendation_cache[task_key] = {
@@ -852,6 +1445,44 @@ Generiere auch einen verbesserten, detaillierten Prompt."""
 def health():
     """Health-Check Endpunkt"""
     return jsonify({'status': 'ok', 'groq_configured': bool(GROQ_API_KEY and GROQ_API_KEY != 'dein-groq-api-key-hier')})
+
+
+@app.route('/api/workflow-history', methods=['GET', 'POST'])
+def update_workflow_history():
+    """GET: Verlauf abrufen, POST: Nutzer-Feedback (Sternebewertung) speichern."""
+    if request.method == 'GET':
+        entries = WorkflowHistory.query.order_by(WorkflowHistory.created_at.desc()).limit(20).all()
+        return jsonify([entry.to_dict() for entry in entries])
+
+    data = request.get_json() or {}
+
+    workflow_history_id = data.get('id', data.get('workflow_history_id'))
+    user_rating = data.get('rating', data.get('user_rating'))
+
+    try:
+        workflow_history_id = int(workflow_history_id)
+        user_rating = int(user_rating)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'id/workflow_history_id und rating/user_rating müssen numerisch sein'}), 400
+
+    if user_rating < 1 or user_rating > 5:
+        return jsonify({'error': 'user_rating muss zwischen 1 und 5 liegen'}), 400
+
+    history_entry = WorkflowHistory.query.get(workflow_history_id)
+    if not history_entry:
+        return jsonify({'error': 'Workflow-History-Eintrag nicht gefunden'}), 404
+
+    history_entry.user_rating = user_rating
+    db.session.commit()
+    get_tool_scores.cache_clear()
+
+    return jsonify({
+        'success': True,
+        'id': workflow_history_id,
+        'rating': user_rating,
+        'workflow_history_id': workflow_history_id,
+        'user_rating': user_rating,
+    })
 
 
 # App starten

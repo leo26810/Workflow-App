@@ -1,5 +1,11 @@
 import json
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BACKEND_DIR = PROJECT_ROOT / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 from app import app
 from models import db, Tool
@@ -74,9 +80,15 @@ def import_tools(json_path: Path) -> tuple[int, int, int]:
 
 
 if __name__ == '__main__':
-    json_file = Path(__file__).with_name('tools_database.json')
-    if not json_file.exists():
-        raise FileNotFoundError(f'JSON-Datei nicht gefunden: {json_file}')
+    candidate_paths = [
+        PROJECT_ROOT / 'tools_database.json',
+        BACKEND_DIR / 'tools_database.json',
+        Path(__file__).with_name('tools_database.json'),
+    ]
+    json_file = next((path for path in candidate_paths if path.exists()), None)
+    if json_file is None:
+        print('⚠️ tools_database.json nicht gefunden. Kein Import ausgeführt.')
+        raise SystemExit(0)
 
     added_count, updated_count, skipped_count = import_tools(json_file)
     print(
