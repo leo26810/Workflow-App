@@ -1,0 +1,16 @@
+node_modules
+frontend/node_modules
+npm-debug.log
+dist
+frontend/dist
+venv
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+backend/.env
+.git
+.gitignore
+backend/instance/workflow.db
