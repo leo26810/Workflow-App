@@ -10,7 +10,7 @@ import threading
 import queue
 import html
 from typing import Any, TypeVar
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 from functools import lru_cache, wraps
 from flask import Flask, request, jsonify
@@ -25,6 +25,7 @@ from models import (
     Tool,
     ToolUsageLog,
     WorkflowHistory,
+    RecommendationFeedback,
     WorkflowCategory,
     SubCategory,
     TaskTemplate,
@@ -1118,6 +1119,116 @@ def get_low_rated_tools() -> list[str]:
     return [tool.name for tool in tools]
 
 
+def get_feedback_for_history(workflow_history_id: int):
+    return RecommendationFeedback.query.filter_by(workflow_history_id=workflow_history_id).first()
+
+
+def extract_recommended_tool_names(recommendation_data: dict) -> list[str]:
+    if not isinstance(recommendation_data, dict):
+        return []
+
+    recommended_tools = recommendation_data.get('recommended_tools', [])
+    names = []
+    for recommended_tool in recommended_tools:
+        if isinstance(recommended_tool, dict):
+            name = (recommended_tool.get('name') or '').strip()
+        elif isinstance(recommended_tool, str):
+            name = recommended_tool.strip()
+        else:
+            name = ''
+        if name:
+            names.append(name)
+
+    return names
+
+
+def upsert_recommendation_feedback(
+    workflow_history_id: int,
+    *,
+    task_description: str | None = None,
+    area: str | None = None,
+    subcategory: str | None = None,
+    recommended_tools: list[str] | None = None,
+    user_rating: int | None = None,
+    accepted: bool | None = None,
+    reused: bool | None = None,
+    time_saved_minutes: int | None = None,
+    note: str | None = None,
+):
+    feedback = get_feedback_for_history(workflow_history_id)
+    if not feedback:
+        feedback = make_model(
+            RecommendationFeedback,
+            workflow_history_id=workflow_history_id,
+            recommended_tools_json=[],
+        )
+        db.session.add(feedback)
+
+    if task_description is not None:
+        feedback.task_description = task_description.strip()[:1000]
+    if area is not None:
+        feedback.area = area.strip()[:100]
+    if subcategory is not None:
+        feedback.subcategory = subcategory.strip()[:150]
+    if recommended_tools is not None:
+        feedback.recommended_tools_json = [name.strip() for name in recommended_tools if isinstance(name, str) and name.strip()][:20]
+    if user_rating is not None:
+        feedback.user_rating = user_rating
+    if accepted is not None:
+        feedback.accepted = accepted
+    if reused is not None:
+        feedback.reused = reused
+    if time_saved_minutes is not None:
+        feedback.time_saved_minutes = max(0, min(24 * 60, int(time_saved_minutes)))
+    if note is not None:
+        feedback.note = note.strip()[:1000]
+
+    return feedback
+
+
+def compute_kpi_snapshot(days: int = 30) -> dict:
+    bounded_days = max(1, min(365, days))
+    since = datetime.utcnow() - timedelta(days=bounded_days)
+
+    feedback_rows = RecommendationFeedback.query.filter(RecommendationFeedback.updated_at >= since).all()
+    recommendation_count = WorkflowHistory.query.filter(WorkflowHistory.created_at >= since).count()
+
+    ratings = [row.user_rating for row in feedback_rows if row.user_rating is not None]
+    accepted_values = [row.accepted for row in feedback_rows if row.accepted is not None]
+    reused_values = [row.reused for row in feedback_rows if row.reused is not None]
+    saved_minutes_values = [row.time_saved_minutes for row in feedback_rows if row.time_saved_minutes is not None]
+
+    top3_denominator = 0
+    top3_hits = 0
+    for row in feedback_rows:
+        if row.user_rating is None or row.accepted is None:
+            continue
+        top3_denominator += 1
+        if row.user_rating >= 4 and row.accepted:
+            top3_hits += 1
+
+    avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else None
+    satisfaction_rate = round(sum(1 for value in ratings if value >= 4) / len(ratings), 3) if ratings else None
+    acceptance_rate = round(sum(1 for value in accepted_values if value) / len(accepted_values), 3) if accepted_values else None
+    reuse_rate = round(sum(1 for value in reused_values if value) / len(reused_values), 3) if reused_values else None
+    avg_time_saved_minutes = round(sum(saved_minutes_values) / len(saved_minutes_values), 1) if saved_minutes_values else None
+    top3_hit_rate = round(top3_hits / top3_denominator, 3) if top3_denominator else None
+    feedback_coverage = round(len(feedback_rows) / recommendation_count, 3) if recommendation_count else 0.0
+
+    return {
+        'window_days': bounded_days,
+        'recommendation_count': recommendation_count,
+        'feedback_count': len(feedback_rows),
+        'feedback_coverage': feedback_coverage,
+        'avg_user_rating': avg_rating,
+        'satisfaction_rate': satisfaction_rate,
+        'acceptance_rate': acceptance_rate,
+        'reuse_rate': reuse_rate,
+        'avg_time_saved_minutes': avg_time_saved_minutes,
+        'top3_hit_rate': top3_hit_rate,
+    }
+
+
 @ttl_cache(ttl_seconds=300)
 @lru_cache(maxsize=16)
 def get_tool_scores() -> dict:
@@ -1175,6 +1286,41 @@ def get_tool_scores() -> dict:
     for name in list(tool_scores.keys()):
         tool_scores[name] = round(max(0.1, min(2.5, tool_scores[name])), 2)
 
+    recent_feedback = RecommendationFeedback.query.order_by(RecommendationFeedback.updated_at.desc()).limit(250).all()
+    for feedback in recent_feedback:
+        tool_names = feedback.recommended_tools_json or []
+        if not tool_names:
+            continue
+
+        for tool_name in tool_names:
+            if not isinstance(tool_name, str):
+                continue
+
+            normalized_name = tool_name.strip()
+            if not normalized_name:
+                continue
+
+            score = tool_scores.get(normalized_name, 1.0)
+
+            if feedback.user_rating is not None:
+                score += (feedback.user_rating - 3) * 0.18
+
+            if feedback.accepted is True:
+                score += 0.08
+            elif feedback.accepted is False:
+                score -= 0.05
+
+            if feedback.reused is True:
+                score += 0.12
+
+            if feedback.time_saved_minutes is not None:
+                score += min(0.2, max(0, feedback.time_saved_minutes) / 300)
+
+            tool_scores[normalized_name] = score
+
+    for name in list(tool_scores.keys()):
+        tool_scores[name] = round(max(0.1, min(2.5, tool_scores[name])), 2)
+
     return tool_scores
 
 
@@ -1189,7 +1335,16 @@ def get_user_level(skills: list) -> str:
     return 'Anfänger'
 
 
-def build_tool_recommendations(tools: list, task_type: str, user_level: str, tool_scores: dict, preferred_names=None, max_count=3):
+def build_tool_recommendations(
+    tools: list,
+    task_type: str,
+    user_level: str,
+    tool_scores: dict,
+    preferred_names=None,
+    max_count=3,
+    area: str = '',
+    subcategory: str = '',
+):
     preferred_names = preferred_names or []
     preferred_lower = {name.strip().lower() for name in preferred_names if name}
 
@@ -1203,6 +1358,13 @@ def build_tool_recommendations(tools: list, task_type: str, user_level: str, too
         hints = TYPE_CATEGORY_HINTS.get(task_type, [])
         if any(hint in category_lower for hint in hints):
             base_score += 0.35
+
+        area_lower = (area or '').lower().strip()
+        subcategory_lower = (subcategory or '').lower().strip()
+        if subcategory_lower and (subcategory_lower in category_lower or category_lower in subcategory_lower):
+            base_score += 0.35
+        elif area_lower and area_lower in category_lower:
+            base_score += 0.2
 
         if tool.name.lower() in preferred_lower:
             base_score += 0.3
@@ -1244,7 +1406,17 @@ def build_tool_recommendations(tools: list, task_type: str, user_level: str, too
     return selected
 
 
-def normalize_recommendation_payload(recommendation: dict, task_description: str, task_type: str, confidence: float, tools: list, skills: list, tool_scores: dict) -> dict:
+def normalize_recommendation_payload(
+    recommendation: dict,
+    task_description: str,
+    task_type: str,
+    confidence: float,
+    tools: list,
+    skills: list,
+    tool_scores: dict,
+    area: str = '',
+    subcategory: str = '',
+) -> dict:
     user_level = get_user_level(skills)
 
     recommended_raw = recommendation.get('recommended_tools', []) if isinstance(recommendation, dict) else []
@@ -1261,6 +1433,8 @@ def normalize_recommendation_payload(recommendation: dict, task_description: str
         user_level=user_level,
         tool_scores=tool_scores,
         preferred_names=preferred_names,
+        area=area,
+        subcategory=subcategory,
     )
 
     workflow = recommendation.get('workflow') if isinstance(recommendation, dict) else None
@@ -1342,7 +1516,7 @@ def generate_generic_help_recommendation(task_description: str) -> dict:
     }
 
 
-def save_workflow_history(task_description: str, recommendation: dict):
+def save_workflow_history(task_description: str, recommendation: dict, area: str = '', subcategory: str = ''):
     history_entry = make_model(
         WorkflowHistory,
         task_description=task_description,
@@ -1351,6 +1525,16 @@ def save_workflow_history(task_description: str, recommendation: dict):
         user_rating=None,
     )
     db.session.add(history_entry)
+    db.session.flush()
+
+    upsert_recommendation_feedback(
+        history_entry.id,
+        task_description=task_description,
+        area=area,
+        subcategory=subcategory,
+        recommended_tools=extract_recommended_tool_names(recommendation),
+    )
+
     db.session.commit()
     get_tool_scores.cache_clear()
     return history_entry.id
@@ -1463,7 +1647,16 @@ def build_personalized_context():
     return context, skills, goals, tools
 
 
-def generate_fallback_recommendation(task: str, tools: list, skills: list, task_type: str, confidence: float, tool_scores: dict) -> dict:
+def generate_fallback_recommendation(
+    task: str,
+    tools: list,
+    skills: list,
+    task_type: str,
+    confidence: float,
+    tool_scores: dict,
+    area: str = '',
+    subcategory: str = '',
+) -> dict:
     workflow_templates = {
         'IMAGE': [
             'Motiv und Stil klar definieren',
@@ -1534,6 +1727,8 @@ def generate_fallback_recommendation(task: str, tools: list, skills: list, task_
         tools=tools,
         skills=skills,
         tool_scores=tool_scores,
+        area=area,
+        subcategory=subcategory,
     )
 
 
@@ -1748,6 +1943,8 @@ Falls kein Tool passt, gib trotzdem einen präzisen Workflow mit umsetzbaren Sch
                             tools=tools,
                             skills=skills,
                             tool_scores=tool_scores,
+                            area=area,
+                            subcategory=subcategory,
                         )
                         personalization_note = (ai_recommendation.get('personalization_note') or '').strip() if isinstance(ai_recommendation, dict) else ''
                         next_step = (ai_recommendation.get('next_step') or '').strip() if isinstance(ai_recommendation, dict) else ''
@@ -1778,6 +1975,8 @@ Falls kein Tool passt, gib trotzdem einen präzisen Workflow mit umsetzbaren Sch
                 task_type=task_type,
                 confidence=confidence,
                 tool_scores=tool_scores,
+                area=area,
+                subcategory=subcategory,
             )
             mode = 'demo'
             model_used = 'fallback_local_rule_based'
@@ -1808,7 +2007,7 @@ Falls kein Tool passt, gib trotzdem einen präzisen Workflow mit umsetzbaren Sch
     recommendation['personalization_note'] = personalization_note
     recommendation['next_step'] = next_step
 
-    history_id = save_workflow_history(task_description, recommendation)
+    history_id = save_workflow_history(task_description, recommendation, area=area, subcategory=subcategory)
 
     response_payload = {
         'task': task_description,
@@ -1950,7 +2149,88 @@ def health():
         'status': 'ok',
         'groq_configured': bool(GROQ_API_KEY and GROQ_API_KEY != 'dein-groq-api-key-hier'),
         'telegram_configured': is_telegram_enabled(),
+        'feedback_records': RecommendationFeedback.query.count(),
     })
+
+
+@app.route('/api/kpis', methods=['GET'])
+def get_kpis():
+    try:
+        days = int(str(request.args.get('days', '30')).strip())
+    except (TypeError, ValueError):
+        return jsonify({'error': 'days muss numerisch sein'}), 400
+
+    snapshot = compute_kpi_snapshot(days=days)
+    return jsonify(snapshot)
+
+
+@app.route('/api/recommendation-feedback', methods=['POST'])
+def save_recommendation_feedback():
+    data = request.get_json(silent=True) or {}
+
+    workflow_history_id_raw = data.get('workflow_history_id', data.get('id'))
+    if workflow_history_id_raw is None:
+        return jsonify({'error': 'workflow_history_id ist erforderlich'}), 400
+
+    try:
+        workflow_history_id = int(str(workflow_history_id_raw).strip())
+    except (TypeError, ValueError):
+        return jsonify({'error': 'workflow_history_id muss numerisch sein'}), 400
+
+    history_entry = WorkflowHistory.query.get(workflow_history_id)
+    if not history_entry:
+        return jsonify({'error': 'Workflow-History-Eintrag nicht gefunden'}), 404
+
+    user_rating = data.get('user_rating', data.get('rating'))
+    accepted = data.get('accepted')
+    reused = data.get('reused')
+    time_saved_minutes = data.get('time_saved_minutes')
+    note = data.get('note')
+
+    if user_rating is not None:
+        try:
+            user_rating = int(str(user_rating).strip())
+        except (TypeError, ValueError):
+            return jsonify({'error': 'user_rating muss numerisch sein'}), 400
+        if user_rating < 1 or user_rating > 5:
+            return jsonify({'error': 'user_rating muss zwischen 1 und 5 liegen'}), 400
+
+    if time_saved_minutes is not None:
+        try:
+            time_saved_minutes = int(str(time_saved_minutes).strip())
+        except (TypeError, ValueError):
+            return jsonify({'error': 'time_saved_minutes muss numerisch sein'}), 400
+        if time_saved_minutes < 0:
+            return jsonify({'error': 'time_saved_minutes muss >= 0 sein'}), 400
+
+    if accepted is not None and not isinstance(accepted, bool):
+        return jsonify({'error': 'accepted muss true/false sein'}), 400
+    if reused is not None and not isinstance(reused, bool):
+        return jsonify({'error': 'reused muss true/false sein'}), 400
+
+    if user_rating is not None:
+        history_entry.user_rating = user_rating
+
+    try:
+        recommendation_data = json.loads(history_entry.recommendation_json or '{}')
+    except json.JSONDecodeError:
+        recommendation_data = {}
+
+    feedback_entry = upsert_recommendation_feedback(
+        workflow_history_id,
+        task_description=history_entry.task_description,
+        recommended_tools=extract_recommended_tool_names(recommendation_data),
+        user_rating=user_rating,
+        accepted=accepted,
+        reused=reused,
+        time_saved_minutes=time_saved_minutes,
+        note=note,
+    )
+
+    db.session.commit()
+    get_tool_scores.cache_clear()
+
+    return jsonify({'success': True, 'feedback': feedback_entry.to_dict()})
 
 
 @app.route('/api/workflow-history', methods=['GET', 'POST'])
@@ -1981,6 +2261,22 @@ def update_workflow_history():
         return jsonify({'error': 'Workflow-History-Eintrag nicht gefunden'}), 404
 
     history_entry.user_rating = user_rating
+    try:
+        recommendation_data = json.loads(history_entry.recommendation_json or '{}')
+    except json.JSONDecodeError:
+        recommendation_data = {}
+
+    upsert_recommendation_feedback(
+        workflow_history_id,
+        task_description=history_entry.task_description,
+        recommended_tools=extract_recommended_tool_names(recommendation_data),
+        user_rating=user_rating,
+        accepted=(user_rating >= 4),
+        reused=(user_rating >= 4),
+        time_saved_minutes=30 if user_rating >= 4 else 10,
+        note='Auto-sync from workflow-history rating',
+    )
+
     db.session.commit()
     get_tool_scores.cache_clear()
 

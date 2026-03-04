@@ -3,6 +3,7 @@ models.py - Datenbankmodelle für die Workflow-Optimierungs-App
 Verwendet SQLAlchemy ORM mit SQLite als Datenbank
 """
 
+import json
 from datetime import date, datetime, timedelta
 from typing import Any, TypeVar
 
@@ -151,6 +152,42 @@ class WorkflowHistory(db.Model):
             'recommendation_json': self.recommendation_json,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'user_rating': self.user_rating
+        }
+
+
+class RecommendationFeedback(db.Model):
+    """Nutzer-Feedback pro Empfehlung für dynamisches Ranking und KPI-Berechnung."""
+    __tablename__ = 'recommendation_feedback'
+
+    id = db.Column(db.Integer, primary_key=True)
+    workflow_history_id = db.Column(db.Integer, db.ForeignKey('workflow_history.id'), nullable=False, unique=True)
+    task_description = db.Column(db.String(1000), nullable=True)
+    area = db.Column(db.String(100), nullable=True)
+    subcategory = db.Column(db.String(150), nullable=True)
+    recommended_tools_json = db.Column(db.JSON, nullable=False, default=list)
+    user_rating = db.Column(db.Integer, nullable=True)
+    accepted = db.Column(db.Boolean, nullable=True)
+    reused = db.Column(db.Boolean, nullable=True)
+    time_saved_minutes = db.Column(db.Integer, nullable=True)
+    note = db.Column(db.String(1000), nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'workflow_history_id': self.workflow_history_id,
+            'task_description': self.task_description,
+            'area': self.area,
+            'subcategory': self.subcategory,
+            'recommended_tools': self.recommended_tools_json or [],
+            'user_rating': self.user_rating,
+            'accepted': self.accepted,
+            'reused': self.reused,
+            'time_saved_minutes': self.time_saved_minutes,
+            'note': self.note,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
@@ -1093,6 +1130,38 @@ def seed_extended_data():
                 user_rating=5,
             ),
         ])
+
+    history_entries = WorkflowHistory.query.order_by(WorkflowHistory.created_at.asc()).limit(5).all()
+    if history_entries and RecommendationFeedback.query.first() is None:
+        for history_entry in history_entries:
+            try:
+                recommendation_data = json.loads(history_entry.recommendation_json or '{}')
+            except Exception:
+                recommendation_data = {}
+
+            recommended_tools = []
+            for item in recommendation_data.get('recommended_tools', []):
+                if isinstance(item, dict):
+                    name = (item.get('name') or '').strip()
+                elif isinstance(item, str):
+                    name = item.strip()
+                else:
+                    name = ''
+                if name:
+                    recommended_tools.append(name)
+
+            feedback = make_model(
+                RecommendationFeedback,
+                workflow_history_id=history_entry.id,
+                task_description=history_entry.task_description,
+                recommended_tools_json=recommended_tools,
+                user_rating=history_entry.user_rating,
+                accepted=True if history_entry.user_rating and history_entry.user_rating >= 4 else None,
+                reused=True if history_entry.user_rating and history_entry.user_rating >= 4 else None,
+                time_saved_minutes=30 if history_entry.user_rating and history_entry.user_rating >= 4 else None,
+                note='Seeded baseline feedback',
+            )
+            db.session.add(feedback)
 
     if UserPreference.query.first() is None:
         db.session.add_all([

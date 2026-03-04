@@ -45,6 +45,7 @@ REQUIRED_DB_TABLES = [
     "user_context",
     "research_sessions",
     "school_projects",
+    "recommendation_feedback",
 ]
 
 REQUIRED_ENDPOINTS = [
@@ -54,6 +55,8 @@ REQUIRED_ENDPOINTS = [
     "/api/research-session",
     "/api/school-projects",
     "/api/user-context",
+    "/api/kpis",
+    "/api/recommendation-feedback",
     "/api/telegram/status",
     "/api/telegram/setup-webhook",
     "/api/telegram/webhook/<secret>",
@@ -198,6 +201,14 @@ def get_db_report(db_path: Path) -> list[str]:
     else:
         report.append("  ❌ workflow_history Tabelle fehlt")
 
+    report.append("Feedback-/KPI-Check:")
+    if "recommendation_feedback" in table_counts:
+        feedback_count = table_counts["recommendation_feedback"]
+        feedback_status = "✅" if feedback_count > 0 else "⚠️"
+        report.append(f"  {feedback_status} recommendation_feedback: {feedback_count} Einträge")
+    else:
+        report.append("  ❌ recommendation_feedback Tabelle fehlt")
+
     connection.close()
     return report
 
@@ -329,6 +340,20 @@ def get_backend_report() -> list[str]:
                     report.append(f"  ✅ allowed_chat_ids_configured: {payload.get('allowed_chat_ids_configured')}")
         except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as exc:
             report.append(f"  ⚠️ Nicht erreichbar oder ungültige Antwort: {exc}")
+
+        report.append("KPI Runtime-Status (wenn Backend läuft):")
+        try:
+            with urlrequest.urlopen("http://localhost:5000/api/kpis?days=30", timeout=2) as response:
+                if response.status != 200:
+                    report.append(f"  ⚠️ /api/kpis HTTP {response.status}")
+                else:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    report.append(f"  ✅ recommendation_count: {payload.get('recommendation_count')}")
+                    report.append(f"  ✅ feedback_count: {payload.get('feedback_count')}")
+                    report.append(f"  ✅ avg_user_rating: {payload.get('avg_user_rating')}")
+                    report.append(f"  ✅ top3_hit_rate: {payload.get('top3_hit_rate')}")
+        except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            report.append(f"  ⚠️ KPI nicht erreichbar oder ungültig: {exc}")
     else:
         report.append("  ❌ backend/app.py fehlt")
 
