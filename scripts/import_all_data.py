@@ -1,3 +1,4 @@
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -11,15 +12,19 @@ from app import app
 from models import db, PromptTemplate, Tool
 
 BASE_DIR = Path(__file__).resolve().parent
+CUSTOM_DATA_DIR: Path | None = None
 
 
 def resolve_json_path(file_name: str) -> Path | None:
     candidates = [
+        CUSTOM_DATA_DIR / file_name if CUSTOM_DATA_DIR else None,
         PROJECT_ROOT / file_name,
         BACKEND_DIR / file_name,
         BASE_DIR / file_name,
     ]
     for candidate in candidates:
+        if candidate is None:
+            continue
         if candidate.exists():
             return candidate
     return None
@@ -145,8 +150,13 @@ def import_data() -> None:
                 is_new = tool is None
 
                 if is_new:
-                    tool = Tool(name=name, category="Allgemein")
+                    tool = Tool()
+                    tool.name = name
+                    tool.category = "Allgemein"
                     db.session.add(tool)
+
+                if tool is None:
+                    raise RuntimeError("Tool konnte nicht initialisiert werden")
 
                 for field_name in tool_fields:
                     if field_name == "name":
@@ -180,8 +190,13 @@ def import_data() -> None:
                 is_new = tool is None
 
                 if is_new:
-                    tool = Tool(name=name, category="Allgemein")
+                    tool = Tool()
+                    tool.name = name
+                    tool.category = "Allgemein"
                     db.session.add(tool)
+
+                if tool is None:
+                    raise RuntimeError("Tool konnte nicht initialisiert werden")
 
                 base_notes = entry.get("notes")
                 if base_notes is None and not is_new:
@@ -234,9 +249,15 @@ def import_data() -> None:
                 is_new = template is None
 
                 if is_new:
-                    template = PromptTemplate(title=title, category=category, prompt_text=final_prompt_text, tool_id=None)
+                    template = PromptTemplate()
+                    template.title = title
+                    template.category = category
+                    template.prompt_text = final_prompt_text
+                    template.tool_id = None
                     db.session.add(template)
                 else:
+                    if template is None:
+                        raise RuntimeError("PromptTemplate konnte nicht initialisiert werden")
                     template.title = title
                     template.category = category
                     template.prompt_text = final_prompt_text
@@ -260,4 +281,17 @@ def import_data() -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Importiert Tool- und Prompt-Daten aus JSON-Dateien.')
+    parser.add_argument('--data-dir', dest='data_dir', default=None, help='Optionaler Ordner mit JSON-Dateien')
+    args = parser.parse_args()
+
+    if args.data_dir:
+        candidate_dir = Path(args.data_dir).expanduser()
+        if not candidate_dir.is_absolute():
+            candidate_dir = (PROJECT_ROOT / candidate_dir).resolve()
+        if not candidate_dir.exists() or not candidate_dir.is_dir():
+            print(f"⚠️ Datenordner nicht gefunden: {args.data_dir}")
+            raise SystemExit(1)
+        CUSTOM_DATA_DIR = candidate_dir
+
     import_data()

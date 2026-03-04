@@ -1,16 +1,17 @@
 FROM python:3.11-slim
 
-WORKDIR /app
+WORKDIR /workspace
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/requirements.txt ./backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
 
-COPY app.py models.py import_tools.py ./
-RUN mkdir -p /app/instance
+COPY backend ./backend
+COPY scripts ./scripts
+RUN mkdir -p /workspace/backend/instance
 
 EXPOSE 5000
 
-CMD ["python", "app.py"]
+CMD ["python", "backend/app.py"]

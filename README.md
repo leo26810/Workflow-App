@@ -114,3 +114,10 @@ python scripts/import_tools.py
 ```
 
 Hinweis: Die ursprünglichen Seed-JSON-Dateien wurden nach dem Import entfernt. Die Import-Skripte laufen weiterhin und überspringen fehlende Dateien sauber.
+
+Optional kannst du eigene JSON-Quellen angeben:
+
+```bash
+python scripts/import_all_data.py --data-dir ./dein-json-ordner
+python scripts/import_tools.py --json ./dein-json-ordner/tools_database.json
+```

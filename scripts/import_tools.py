@@ -1,3 +1,4 @@
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -64,12 +65,11 @@ def import_tools(json_path: Path) -> tuple[int, int, int]:
                 tool.notes = final_notes[:1000] if final_notes else ''
                 updated += 1
             else:
-                tool = Tool(
-                    name=name,
-                    category=category,
-                    url=url,
-                    notes=final_notes[:1000] if final_notes else '',
-                )
+                tool = Tool()
+                tool.name = name
+                tool.category = category
+                tool.url = url
+                tool.notes = final_notes[:1000] if final_notes else ''
                 db.session.add(tool)
                 existing[key] = tool
                 added += 1
@@ -79,15 +79,32 @@ def import_tools(json_path: Path) -> tuple[int, int, int]:
     return added, updated, skipped
 
 
-if __name__ == '__main__':
+def resolve_tools_json(custom_path: str | None = None) -> Path | None:
+    if custom_path:
+        provided = Path(custom_path).expanduser()
+        if not provided.is_absolute():
+            provided = (PROJECT_ROOT / provided).resolve()
+        return provided if provided.exists() else None
+
     candidate_paths = [
         PROJECT_ROOT / 'tools_database.json',
         BACKEND_DIR / 'tools_database.json',
         Path(__file__).with_name('tools_database.json'),
     ]
-    json_file = next((path for path in candidate_paths if path.exists()), None)
+    return next((path for path in candidate_paths if path.exists()), None)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Importiert Tools aus einer JSON-Datei in die Datenbank.')
+    parser.add_argument('--json', dest='json_path', default=None, help='Pfad zur Tools-JSON-Datei')
+    args = parser.parse_args()
+
+    json_file = resolve_tools_json(args.json_path)
     if json_file is None:
-        print('⚠️ tools_database.json nicht gefunden. Kein Import ausgeführt.')
+        if args.json_path:
+            print(f'⚠️ Angegebene Datei nicht gefunden: {args.json_path}. Kein Import ausgeführt.')
+        else:
+            print('⚠️ tools_database.json nicht gefunden. Kein Import ausgeführt.')
         raise SystemExit(0)
 
     added_count, updated_count, skipped_count = import_tools(json_file)
