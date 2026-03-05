@@ -33,8 +33,8 @@ CORE_FILES = [
     Path("frontend/src/main.jsx"),
     Path("frontend/src/pages/Dashboard.jsx"),
     Path("frontend/src/pages/ProfilePage.jsx"),
-    Path("frontend/src/pages/SchoolPage.jsx"),
-    Path("frontend/src/pages/ResearchPage.jsx"),
+    Path("frontend/src/pages/HistoryPage.jsx"),
+    Path("frontend/src/pages/ConfigPage.jsx"),
     Path("docker-compose.yml"),
     Path("README.md"),
 ]
@@ -445,17 +445,25 @@ def get_frontend_report() -> list[str]:
     report.append(f"node_modules vorhanden: {'ja' if node_modules_exists else 'nein'}")
 
     report.append("Neue Seiten vorhanden:")
-    school_page = ROOT / "frontend" / "src" / "pages" / "SchoolPage.jsx"
-    research_page = ROOT / "frontend" / "src" / "pages" / "ResearchPage.jsx"
+    history_page = ROOT / "frontend" / "src" / "pages" / "HistoryPage.jsx"
+    config_page = ROOT / "frontend" / "src" / "pages" / "ConfigPage.jsx"
     app_page = ROOT / "frontend" / "src" / "App.jsx"
-    report.append(f"  {'✅' if school_page.exists() else '❌'} frontend/src/pages/SchoolPage.jsx")
-    report.append(f"  {'✅' if research_page.exists() else '❌'} frontend/src/pages/ResearchPage.jsx")
+    report.append(f"  {'✅' if history_page.exists() else '❌'} frontend/src/pages/HistoryPage.jsx")
+    report.append(f"  {'✅' if config_page.exists() else '❌'} frontend/src/pages/ConfigPage.jsx")
 
-    report.append("Sidebar-Vereinfachungscheck (App.jsx):")
+    report.append("Navigation-Check (App.jsx):")
     if app_page.exists():
         app_content = app_page.read_text(encoding="utf-8", errors="ignore")
-        has_old_expandable_nav = "KI-Verwendung" in app_content
-        report.append(f"  {'❌' if has_old_expandable_nav else '✅'} Kein alter Nav-Kategorie-Text 'KI-Verwendung' in App.jsx")
+        has_history_route = "/history" in app_content
+        has_config_route = "/config" in app_content
+        has_profile_route = "/profile" in app_content
+        has_old_school_route = "/school" in app_content
+        has_old_research_route = "/research" in app_content
+        report.append(f"  {'✅' if has_history_route else '❌'} Verlauf-Route vorhanden")
+        report.append(f"  {'✅' if has_config_route else '❌'} Config-Route vorhanden")
+        report.append(f"  {'✅' if has_profile_route else '❌'} Profil-Route vorhanden")
+        report.append(f"  {'✅' if not has_old_school_route else '⚠️'} Schulprojekte-Route entfernt")
+        report.append(f"  {'✅' if not has_old_research_route else '⚠️'} Recherche-Route entfernt")
     else:
         report.append("  ❌ frontend/src/App.jsx fehlt")
 
@@ -474,20 +482,20 @@ def get_frontend_report() -> list[str]:
     else:
         report.append("  ❌ frontend/src/index.css fehlt")
 
-    report.append("Seiten-Zeilenzahl-Check (Mindestziel: 200):")
-    if school_page.exists():
-        school_lines = count_lines(school_page)
-        school_status = "⚠️" if school_lines < 200 else "✅"
-        report.append(f"  {school_status} frontend/src/pages/SchoolPage.jsx: {school_lines} Zeilen")
+    report.append("Seiten-Zeilenzahl-Check (Mindestziel: 120):")
+    if history_page.exists():
+        history_lines = count_lines(history_page)
+        history_status = "⚠️" if history_lines < 120 else "✅"
+        report.append(f"  {history_status} frontend/src/pages/HistoryPage.jsx: {history_lines} Zeilen")
     else:
-        report.append("  ❌ frontend/src/pages/SchoolPage.jsx: fehlt")
+        report.append("  ❌ frontend/src/pages/HistoryPage.jsx: fehlt")
 
-    if research_page.exists():
-        research_lines = count_lines(research_page)
-        research_status = "⚠️" if research_lines < 200 else "✅"
-        report.append(f"  {research_status} frontend/src/pages/ResearchPage.jsx: {research_lines} Zeilen")
+    if config_page.exists():
+        config_lines = count_lines(config_page)
+        config_status = "⚠️" if config_lines < 120 else "✅"
+        report.append(f"  {config_status} frontend/src/pages/ConfigPage.jsx: {config_lines} Zeilen")
     else:
-        report.append("  ❌ frontend/src/pages/ResearchPage.jsx: fehlt")
+        report.append("  ❌ frontend/src/pages/ConfigPage.jsx: fehlt")
 
     report.append("Frontend JSX-Dateien:")
     jsx_files = []

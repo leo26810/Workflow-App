@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import Dashboard from './pages/Dashboard.jsx'
 import ProfilePage from './pages/ProfilePage.jsx'
-import SchoolPage from './pages/SchoolPage.jsx'
-import ResearchPage from './pages/ResearchPage.jsx'
+import HistoryPage from './pages/HistoryPage.jsx'
+import ConfigPage from './pages/ConfigPage.jsx'
 
 export default function App() {
   const location = useLocation()
@@ -12,8 +12,8 @@ export default function App() {
 
   const navItems = [
     { to: '/', label: 'Dashboard', isActive: (path) => path === '/' || path === '/dashboard' },
-    { to: '/school', label: 'Schulprojekte', isActive: (path) => path === '/school' },
-    { to: '/research', label: 'Recherche', isActive: (path) => path === '/research' },
+    { to: '/history', label: 'Verlauf', isActive: (path) => path === '/history' },
+    { to: '/config', label: 'Config', isActive: (path) => path === '/config' },
     { to: '/profile', label: 'Mein Profil', isActive: (path) => path === '/profile' },
   ]
 
@@ -113,9 +113,9 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/history" element={<HistoryPage />} />
+          <Route path="/config" element={<ConfigPage />} />
           <Route path="/profile" element={<ProfilePage />} />
-          <Route path="/school" element={<SchoolPage />} />
-          <Route path="/research" element={<ResearchPage />} />
         </Routes>
       </main>
     </div>
