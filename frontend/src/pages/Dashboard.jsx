@@ -30,6 +30,9 @@ export default function Dashboard() {
   const [profileName, setProfileName] = useState('Nutzer')
   const [recentTaskLine, setRecentTaskLine] = useState('')
   const [categoriesData, setCategoriesData] = useState([])
+  const [kpiSummary, setKpiSummary] = useState(null)
+  const [kpiLoading, setKpiLoading] = useState(false)
+  const [kpiError, setKpiError] = useState(null)
   const [inputFocused, setInputFocused] = useState(false)
   const [resultVisible, setResultVisible] = useState(false)
   const resultRef = useRef(null)
@@ -57,6 +60,12 @@ export default function Dashboard() {
     if (!recentTaskLine) return '—'
     return recentTaskLine.length > 50 ? `${recentTaskLine.slice(0, 47)}...` : recentTaskLine
   }, [recentTaskLine])
+
+  const kpiTargetsBelow = useMemo(() => {
+    const targets = kpiSummary?.snapshot?.kpi_targets
+    if (!targets || typeof targets !== 'object') return []
+    return Object.entries(targets).filter(([, info]) => info?.status === 'below-target')
+  }, [kpiSummary])
 
   const estimateTemplateTime = (template) => {
     const tags = (template?.tags || '').toLowerCase()
@@ -165,6 +174,8 @@ export default function Dashboard() {
   useEffect(() => {
     let alive = true
     const loadHeaderData = async () => {
+      setKpiLoading(true)
+      setKpiError(null)
       try {
         const profileRes = await fetch('/api/profile')
         if (profileRes.ok) {
@@ -187,7 +198,18 @@ export default function Dashboard() {
           const categoriesJson = await categoriesRes.json()
           if (alive) setCategoriesData(Array.isArray(categoriesJson) ? categoriesJson : [])
         }
+
+        const kpiRes = await fetch('/api/kpis/report?days=30')
+        if (kpiRes.ok) {
+          const kpiJson = await kpiRes.json()
+          if (alive) setKpiSummary(kpiJson)
+        } else if (alive) {
+          setKpiError(`KPI nicht verfügbar (${kpiRes.status})`)
+        }
       } catch {
+        if (alive) setKpiError('KPI derzeit nicht erreichbar')
+      } finally {
+        if (alive) setKpiLoading(false)
       }
     }
 
@@ -312,6 +334,27 @@ export default function Dashboard() {
         <p style={{ margin: 0, color: 'rgba(255,255,255,0.4)', fontSize: '13px' }}>
           {`Zuletzt: ${truncatedRecentLine}`}
         </p>
+      </div>
+
+      <div style={{ ...baseCardStyle, marginBottom: '1rem', padding: '0.9rem 1rem' }}>
+        <p style={{ ...cardTitleStyle, marginBottom: '0.55rem' }}>KPI · 30 Tage</p>
+        {kpiLoading && <p style={{ margin: 0, fontSize: '0.8rem', color: 'rgba(255,255,255,0.5)' }}>KPI werden geladen…</p>}
+        {!kpiLoading && kpiError && <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--warning)' }}>{kpiError}</p>}
+        {!kpiLoading && !kpiError && kpiSummary?.snapshot && (
+          <div style={{ display: 'grid', gap: '0.45rem' }}>
+            <div style={{ display: 'flex', gap: '0.8rem', flexWrap: 'wrap', fontSize: '0.78rem', color: 'rgba(255,255,255,0.78)' }}>
+              <span>Health: {kpiSummary.snapshot.kpi_health_index ?? 'n/a'}</span>
+              <span>Rating: {kpiSummary.snapshot.avg_user_rating ?? 'n/a'}</span>
+              <span>Top3: {kpiSummary.snapshot.top3_hit_rate ?? 'n/a'}</span>
+              <span>Coverage: {kpiSummary.snapshot.feedback_coverage ?? 'n/a'}</span>
+            </div>
+            {!!kpiTargetsBelow.length && (
+              <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--warning)' }}>
+                Unter Ziel: {kpiTargetsBelow.map(([metric]) => metric).join(', ')}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       <div

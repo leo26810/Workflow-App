@@ -59,6 +59,7 @@ REQUIRED_ENDPOINTS = [
     "/api/kpis",
     "/api/kpis/targets",
     "/api/kpis/report",
+    "/api/kpis/scheduler-status",
     "/api/recommendation-feedback",
     "/api/telegram/status",
     "/api/telegram/setup-webhook",
@@ -71,6 +72,12 @@ TELEGRAM_ENV_KEYS = [
     "TELEGRAM_WEBHOOK_BASE_URL",
     "TELEGRAM_ALLOWED_CHAT_IDS",
     "TELEGRAM_MODE",
+]
+
+KPI_ENV_KEYS = [
+    "KPI_AUTOREPORT_ENABLED",
+    "KPI_AUTOREPORT_INTERVAL_MINUTES",
+    "KPI_REPORT_WINDOW_DAYS",
 ]
 
 LOG_DIR = ROOT / "logs"
@@ -303,6 +310,16 @@ def get_backend_report() -> list[str]:
     else:
         report.append("  ❌ backend/.env fehlt")
 
+    report.append("KPI-Konfig-Checks (.env, optional):")
+    if env_path.exists():
+        for key in KPI_ENV_KEYS:
+            if key in env_map:
+                report.append(f"  ✅ {key}: vorhanden")
+            else:
+                report.append(f"  ⚠️ {key}: nicht gesetzt (Default wird genutzt)")
+    else:
+        report.append("  ⚠️ backend/.env fehlt")
+
     app_path = ROOT / "backend" / "app.py"
     report.append("API-Endpunkt-Checks (app.py):")
     if app_path.exists():
@@ -369,6 +386,20 @@ def get_backend_report() -> list[str]:
                     report.append(f"  ✅ target_count: {len(payload) if isinstance(payload, dict) else 0}")
         except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as exc:
             report.append(f"  ⚠️ KPI-Targets nicht erreichbar oder ungültig: {exc}")
+
+        report.append("KPI Scheduler Runtime-Status (wenn Backend läuft):")
+        try:
+            with urlrequest.urlopen("http://localhost:5000/api/kpis/scheduler-status", timeout=2) as response:
+                if response.status != 200:
+                    report.append(f"  ⚠️ /api/kpis/scheduler-status HTTP {response.status}")
+                else:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    report.append(f"  ✅ enabled: {payload.get('enabled')}")
+                    report.append(f"  ✅ started: {payload.get('started')}")
+                    report.append(f"  ✅ interval_minutes: {payload.get('interval_minutes')}")
+                    report.append(f"  ✅ last_report_at: {payload.get('last_report_at')}")
+        except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            report.append(f"  ⚠️ KPI-Scheduler nicht erreichbar oder ungültig: {exc}")
     else:
         report.append("  ❌ backend/app.py fehlt")
 

@@ -10,7 +10,7 @@ import threading
 import queue
 import html
 from typing import Any, TypeVar
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 from functools import lru_cache, wraps
 from flask import Flask, request, jsonify
@@ -70,6 +70,23 @@ TELEGRAM_MODE = (os.environ.get('TELEGRAM_MODE') or 'webhook').strip().lower()
 if TELEGRAM_MODE not in {'webhook', 'polling'}:
     TELEGRAM_MODE = 'webhook'
 
+
+def parse_bool_env(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    clean = value.strip().lower()
+    if clean in {'1', 'true', 'yes', 'on', 'ja'}:
+        return True
+    if clean in {'0', 'false', 'no', 'off', 'nein'}:
+        return False
+    return default
+
+
+KPI_AUTOREPORT_ENABLED = parse_bool_env('KPI_AUTOREPORT_ENABLED', True)
+KPI_AUTOREPORT_INTERVAL_MINUTES = max(5, min(1440, int((os.environ.get('KPI_AUTOREPORT_INTERVAL_MINUTES') or '60').strip() or '60')))
+KPI_REPORT_WINDOW_DAYS = max(1, min(365, int((os.environ.get('KPI_REPORT_WINDOW_DAYS') or '30').strip() or '30')))
+
 KPI_TARGETS = {
     'feedback_coverage': {'target': 0.6, 'direction': 'min'},
     'avg_user_rating': {'target': 4.2, 'direction': 'min'},
@@ -127,10 +144,15 @@ ALLOWED_CHAT_IDS = parse_allowed_chat_ids(TELEGRAM_ALLOWED_CHAT_IDS)
 telegram_update_queue = queue.Queue(maxsize=500)
 telegram_worker_started = False
 telegram_receiver_started = False
+kpi_scheduler_started = False
 telegram_worker_lock = threading.Lock()
 telegram_receiver_lock = threading.Lock()
+kpi_scheduler_lock = threading.Lock()
 telegram_processed_updates = {}
 telegram_processed_lock = threading.Lock()
+kpi_last_report_path = None
+kpi_last_report_at = None
+kpi_last_report_error = None
 TELEGRAM_UPDATE_TTL_SECONDS = 600
 
 # Datenbank mit App verbinden
@@ -1286,6 +1308,67 @@ def compute_kpi_snapshot(days: int = 30) -> dict:
     }
 
 
+def write_kpi_report_file(days: int | None = None) -> str:
+    global kpi_last_report_path, kpi_last_report_at, kpi_last_report_error
+
+    report_days = days if isinstance(days, int) else KPI_REPORT_WINDOW_DAYS
+    snapshot = compute_kpi_snapshot(days=report_days)
+
+    log_dir = os.path.join(os.path.dirname(BASE_DIR), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    file_name = f'kpi_report_{timestamp}.json'
+    file_path = os.path.join(log_dir, file_name)
+
+    payload = {
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+        'window_days': report_days,
+        'snapshot': snapshot,
+    }
+
+    with open(file_path, 'w', encoding='utf-8') as file_handle:
+        json.dump(payload, file_handle, ensure_ascii=False, indent=2)
+
+    kpi_last_report_path = file_path
+    kpi_last_report_at = payload['generated_at']
+    kpi_last_report_error = None
+
+    return file_path
+
+
+def kpi_scheduler_loop():
+    global kpi_last_report_error
+    app.logger.info('KPI scheduler: started')
+    interval_seconds = KPI_AUTOREPORT_INTERVAL_MINUTES * 60
+
+    while True:
+        try:
+            with app.app_context():
+                file_path = write_kpi_report_file()
+                app.logger.info(f'KPI scheduler: report written -> {file_path}')
+        except Exception as err:
+            kpi_last_report_error = str(err)
+            app.logger.exception(f'KPI scheduler failed: {err}')
+
+        time.sleep(interval_seconds)
+
+
+def ensure_kpi_scheduler_started():
+    global kpi_scheduler_started
+    if not KPI_AUTOREPORT_ENABLED:
+        return
+
+    with kpi_scheduler_lock:
+        if kpi_scheduler_started:
+            return
+
+        scheduler = threading.Thread(target=kpi_scheduler_loop, daemon=True, name='kpi-autoreport-scheduler')
+        scheduler.start()
+        kpi_scheduler_started = True
+        app.logger.info('KPI scheduler: initialized')
+
+
 @ttl_cache(ttl_seconds=300)
 @lru_cache(maxsize=16)
 def get_tool_scores() -> dict:
@@ -2226,6 +2309,10 @@ def health():
         'groq_configured': bool(GROQ_API_KEY and GROQ_API_KEY != 'dein-groq-api-key-hier'),
         'telegram_configured': is_telegram_enabled(),
         'feedback_records': RecommendationFeedback.query.count(),
+        'kpi_scheduler_enabled': KPI_AUTOREPORT_ENABLED,
+        'kpi_scheduler_started': kpi_scheduler_started,
+        'kpi_last_report_at': kpi_last_report_at,
+        'kpi_last_report_error': kpi_last_report_error,
     })
 
 
@@ -2254,7 +2341,7 @@ def get_kpi_report():
 
     snapshot = compute_kpi_snapshot(days=days)
     return jsonify({
-        'generated_at': datetime.utcnow().isoformat(),
+        'generated_at': datetime.now(timezone.utc).isoformat(),
         'summary': {
             'kpi_health_index': snapshot.get('kpi_health_index'),
             'feedback_coverage': snapshot.get('feedback_coverage'),
@@ -2262,6 +2349,21 @@ def get_kpi_report():
             'top3_hit_rate': snapshot.get('top3_hit_rate'),
         },
         'snapshot': snapshot,
+    })
+
+
+@app.route('/api/kpis/scheduler-status', methods=['GET'])
+def get_kpi_scheduler_status():
+    report_path = kpi_last_report_path or ''
+    report_name = os.path.basename(report_path) if report_path else None
+    return jsonify({
+        'enabled': KPI_AUTOREPORT_ENABLED,
+        'started': kpi_scheduler_started,
+        'interval_minutes': KPI_AUTOREPORT_INTERVAL_MINUTES,
+        'window_days': KPI_REPORT_WINDOW_DAYS,
+        'last_report_at': kpi_last_report_at,
+        'last_report_file': report_name,
+        'last_error': kpi_last_report_error,
     })
 
 
@@ -2408,6 +2510,7 @@ if __name__ == '__main__':
     seeding_thread.start()
 
     ensure_telegram_worker_started()
+    ensure_kpi_scheduler_started()
 
     port = int(os.environ.get('PORT', '5000'))
     debug_mode = os.environ.get('FLASK_DEBUG', 'true').lower() == 'true'

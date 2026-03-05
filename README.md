@@ -96,6 +96,11 @@ docker compose down -v
 - `POST /api/profile`
 - `POST /api/recommendation`
 - `GET /api/health`
+- `GET /api/kpis`
+- `GET /api/kpis/targets`
+- `GET /api/kpis/report`
+- `GET /api/kpis/scheduler-status`
+- `POST /api/recommendation-feedback`
 - `GET /api/telegram/status`
 - `POST /api/telegram/setup-webhook`
 - `POST /api/telegram/webhook/<secret>`
@@ -148,6 +153,7 @@ Alle Kontroll-/Import-/Cleanup-Skripte liegen zentral im Ordner `scripts/`:
 
 ```bash
 python scripts/project_status.py
+python scripts/kpi_auto_report.py --days 30
 python scripts/cleanup_db.py
 python scripts/import_all_data.py
 python scripts/import_tools.py
