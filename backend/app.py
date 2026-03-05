@@ -315,6 +315,7 @@ def send_telegram_message(chat_id: int, text: str, reply_to_message_id=None):
 
 def format_telegram_recommendation(task_description: str, payload: dict) -> str:
     recommendation = payload.get('recommendation', {}) if isinstance(payload, dict) else {}
+    mode = (payload.get('mode') or '').strip().lower() if isinstance(payload, dict) else ''
     workflow = recommendation.get('workflow') if isinstance(recommendation, dict) else []
     tools = recommendation.get('recommended_tools') if isinstance(recommendation, dict) else []
     next_step = (payload.get('next_step') or recommendation.get('next_step') or '').strip()
@@ -323,6 +324,10 @@ def format_telegram_recommendation(task_description: str, payload: dict) -> str:
     optimized_prompt = (recommendation.get('optimized_prompt') or '').strip()
 
     lines = []
+
+    if mode == 'demo':
+        lines.append('⚠️ <b>Demo-Modus aktiv</b>')
+        lines.append('')
 
     if next_step:
         lines.append('<b>Jetzt</b>')
@@ -1705,6 +1710,53 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def classify_ai_provider_error(http_status=None, provider_message: str = '', model_name: str = '') -> dict:
+    message_lower = (provider_message or '').lower()
+
+    if http_status in {401, 403}:
+        code = 'ai_auth_error'
+        user_message = 'KI-Provider Auth fehlgeschlagen. Prüfe den API-Key in backend/.env.'
+        retryable = False
+    elif http_status == 429:
+        code = 'ai_rate_limit'
+        user_message = 'KI-Provider Rate-Limit erreicht. Bitte kurz warten und erneut versuchen.'
+        retryable = True
+    elif http_status == 413 or 'token' in message_lower or 'context length' in message_lower or 'too long' in message_lower:
+        code = 'ai_token_limit'
+        user_message = 'Die Anfrage ist für das aktuelle Modell zu lang (Token/Context-Limit). Kürze die Aufgabe oder den Kontext.'
+        retryable = True
+    elif http_status == 404:
+        code = 'ai_model_not_found'
+        user_message = 'Das KI-Modell ist aktuell nicht verfügbar. Ein alternatives Modell wurde versucht.'
+        retryable = True
+    elif http_status is not None and http_status >= 500:
+        code = 'ai_provider_unavailable'
+        user_message = 'Der KI-Provider ist momentan nicht verfügbar. Bitte später erneut versuchen.'
+        retryable = True
+    elif 'timeout' in message_lower:
+        code = 'ai_timeout'
+        user_message = 'Zeitüberschreitung beim KI-Provider. Bitte erneut versuchen.'
+        retryable = True
+    elif http_status == 400:
+        code = 'ai_bad_request'
+        user_message = 'Die KI-Anfrage konnte vom Provider nicht verarbeitet werden (HTTP 400).'
+        retryable = False
+    else:
+        code = 'ai_provider_error'
+        user_message = 'Unbekannter KI-Provider-Fehler.'
+        retryable = True
+
+    return {
+        'code': code,
+        'user_message': user_message,
+        'retryable': retryable,
+        'http_status': http_status,
+        'provider_message': (provider_message or '').strip()[:500],
+        'model': model_name,
+        'provider': 'groq',
+    }
+
+
 def build_personalized_context():
     skills = Skill.query.order_by(Skill.id.asc()).all()
     goals = Goal.query.order_by(Goal.id.asc()).all()
@@ -1929,58 +1981,75 @@ def build_recommendation_response(task_description: str) -> dict:
 
     personalized_context, skills, goals, tools = build_personalized_context()
     tool_scores = get_tool_scores()
-    specialized_sub_prompt = get_specialized_sub_prompt(area_key)
-    templates_for_subcategory = get_templates_for_subcategory(subcategory)
-    user = User.query.first()
-    user_context_map = get_user_context_key_map()
-    low_rated_tools = get_low_rated_tools()
-    frequently_used_tools = get_frequently_used_tools(limit=3)
-
-    user_name = (user.name if user and user.name else 'Nutzer').strip()
-    main_subjects = user_context_map.get('hauptfaecher') or user_context_map.get('schule_faecher') or 'nicht angegeben'
-    ki_experience = user_context_map.get('ki_erfahrung') or 'nicht angegeben'
-    learning_style = user_context_map.get('lernstil') or 'nicht angegeben'
-
-    skills_text = '\n'.join([f"- {skill}" for skill in personalized_context['skills_with_level']]) or "- Keine Fähigkeiten angegeben"
-    goals_text = '\n'.join([f"- {goal}" for goal in personalized_context['goals']]) or "- Keine Ziele angegeben"
-    top_tools_text = '\n'.join([
-        f"- {item['name']} (Ø Rating: {item['avg_rating']})"
-        for item in personalized_context['top_tools']
-    ]) or "- Keine bevorzugten Tools verfügbar"
-
-    user_context_text = '\n'.join([
-        f"- [{item.get('area')}] {item.get('key')}: {item.get('value')}"
-        for item in personalized_context.get('user_context', [])
-    ]) or '- Kein zusätzlicher Nutzerkontext gespeichert'
-
-    history_text = '\n'.join([
-        f"- Aufgabe: {item['task']} | Rating: {item['user_rating']} | Datum: {item['created_at']}"
-        for item in personalized_context['workflow_history']
-    ]) or "- Kein Verlauf verfügbar"
-
-    tools_text = '\n'.join([
-        (
-            f"- Name: {item['name']} | Kategorie: {item['category']} | Best for: {item['best_for'] or 'n/a'} "
-            f"| Skill-Requirement: {item['skill_requirement'] or 'n/a'} | Prompt-Template: {item['prompt_template'] or 'n/a'} "
-            f"| Free Tier: {item['free_tier_details'] or 'n/a'} | URL: {item['url'] or 'n/a'} | Rating: {item['rating'] if item['rating'] is not None else 'n/a'}"
-        )
-        for item in personalized_context['all_tools']
-    ]) or "- Keine Tools verfügbar"
-
-    avoid_tools_text = ', '.join(personalized_context['avoid_tools']) or 'Keine'
-    low_rated_tools_text = ', '.join(low_rated_tools) or 'Keine'
-    frequently_used_tools_text = ', '.join(frequently_used_tools) or 'Keine'
-
-    templates_text = '\n'.join([
-        f"- {tpl['title']}: {tpl.get('example_input') or ''}"
-        for tpl in templates_for_subcategory
-    ]) or '- Keine Templates verfügbar'
+    frequently_used_tools: list[str] = []
+    main_subjects = 'nicht angegeben'
+    ki_experience = 'nicht angegeben'
 
     app.logger.info(
         f"Recommendation request gestartet: task_type={task_type}, area={area}, subcategory={subcategory}, confidence={confidence}"
     )
 
-    system_prompt = f"""Du bist ein persönlicher KI-Workflow-Coach. Du kennst diesen Nutzer sehr gut:
+    recommendation = None
+    mode = 'demo'
+    model_used = None
+    personalization_note = None
+    next_step = None
+    ai_diagnostics = None
+    ai_attempts = []
+    fallback_variant = None
+
+    if GROQ_API_KEY and GROQ_API_KEY != 'dein-groq-api-key-hier':
+        try:
+            app.logger.info('Recommendation step: trying_groq_api')
+
+            specialized_sub_prompt = get_specialized_sub_prompt(area_key)
+            templates_for_subcategory = get_templates_for_subcategory(subcategory)
+            user = User.query.first()
+            user_context_map = get_user_context_key_map()
+            low_rated_tools = get_low_rated_tools()
+            frequently_used_tools = get_frequently_used_tools(limit=3)
+
+            user_name = (user.name if user and user.name else 'Nutzer').strip()
+            main_subjects = user_context_map.get('hauptfaecher') or user_context_map.get('schule_faecher') or 'nicht angegeben'
+            ki_experience = user_context_map.get('ki_erfahrung') or 'nicht angegeben'
+            learning_style = user_context_map.get('lernstil') or 'nicht angegeben'
+
+            skills_text = '\n'.join([f"- {skill}" for skill in personalized_context['skills_with_level']]) or "- Keine Fähigkeiten angegeben"
+            goals_text = '\n'.join([f"- {goal}" for goal in personalized_context['goals']]) or "- Keine Ziele angegeben"
+            top_tools_text = '\n'.join([
+                f"- {item['name']} (Ø Rating: {item['avg_rating']})"
+                for item in personalized_context['top_tools']
+            ]) or "- Keine bevorzugten Tools verfügbar"
+
+            user_context_text = '\n'.join([
+                f"- [{item.get('area')}] {item.get('key')}: {item.get('value')}"
+                for item in personalized_context.get('user_context', [])
+            ]) or '- Kein zusätzlicher Nutzerkontext gespeichert'
+
+            history_text = '\n'.join([
+                f"- Aufgabe: {item['task']} | Rating: {item['user_rating']} | Datum: {item['created_at']}"
+                for item in personalized_context['workflow_history']
+            ]) or "- Kein Verlauf verfügbar"
+
+            tools_text = '\n'.join([
+                (
+                    f"- Name: {item['name']} | Kategorie: {item['category']} | Best for: {item['best_for'] or 'n/a'} "
+                    f"| Skill-Requirement: {item['skill_requirement'] or 'n/a'} | Prompt-Template: {item['prompt_template'] or 'n/a'} "
+                    f"| Free Tier: {item['free_tier_details'] or 'n/a'} | URL: {item['url'] or 'n/a'} | Rating: {item['rating'] if item['rating'] is not None else 'n/a'}"
+                )
+                for item in personalized_context['all_tools']
+            ]) or "- Keine Tools verfügbar"
+
+            avoid_tools_text = ', '.join(personalized_context['avoid_tools']) or 'Keine'
+            low_rated_tools_text = ', '.join(low_rated_tools) or 'Keine'
+            frequently_used_tools_text = ', '.join(frequently_used_tools) or 'Keine'
+
+            templates_text = '\n'.join([
+                f"- {tpl['title']}: {tpl.get('example_input') or ''}"
+                for tpl in templates_for_subcategory
+            ]) or '- Keine Templates verfügbar'
+
+            system_prompt = f"""Du bist ein persönlicher KI-Workflow-Coach. Du kennst diesen Nutzer sehr gut:
 
 PROFIL:
 - Fähigkeiten:
@@ -2038,7 +2107,7 @@ Antworte ausschließlich als JSON:
 }}
 Kein Fließtext, kein Markdown, nur JSON."""
 
-    user_prompt = f"""Neue Nutzeraufgabe: "{task_description}"
+            user_prompt = f"""Neue Nutzeraufgabe: "{task_description}"
 Klassifikation: {task_type} (confidence={confidence})
 Erkannter Bereich: {area}
 Erkannte Unterkategorie: {subcategory}
@@ -2049,15 +2118,6 @@ Nutze nur Tools aus der angegebenen Tool-Datenbank.
 Nutze bevorzugt gut bewertete Tools und vermeide negativ bewertete Tools aus dem Verlauf.
 Falls kein Tool passt, gib trotzdem einen präzisen Workflow mit umsetzbaren Schritten."""
 
-    recommendation = None
-    mode = 'demo'
-    model_used = None
-    personalization_note = None
-    next_step = None
-
-    if GROQ_API_KEY and GROQ_API_KEY != 'dein-groq-api-key-hier':
-        try:
-            app.logger.info('Recommendation step: trying_groq_api')
             candidate_models = [
                 'llama-3.3-70b-versatile',
                 'llama-3.1-8b-instant',
@@ -2110,19 +2170,84 @@ Falls kein Tool passt, gib trotzdem einen präzisen Workflow mit umsetzbaren Sch
                         mode = 'ai'
                         model_used = model_name
                         app.logger.info(f'Recommendation step: groq_success model={model_used}')
+                        ai_diagnostics = {
+                            'code': 'ai_ok',
+                            'user_message': 'KI-Antwort erfolgreich erstellt.',
+                            'retryable': False,
+                            'provider': 'groq',
+                            'model': model_used,
+                            'http_status': 200,
+                        }
                         break
                     except json.JSONDecodeError:
-                        app.logger.warning(f'Recommendation step: groq_invalid_json model={model_name} -> local_fallback')
-                        break
+                        parse_error = classify_ai_provider_error(
+                            http_status=200,
+                            provider_message='Provider returned non-JSON content',
+                            model_name=model_name,
+                        )
+                        parse_error['code'] = 'ai_invalid_json'
+                        parse_error['user_message'] = 'KI-Antwort war ungültig formatiert (kein valides JSON). Fallback wurde verwendet.'
+                        parse_error['retryable'] = True
+                        ai_attempts.append(parse_error)
+                        ai_diagnostics = parse_error
+                        app.logger.warning(f'Recommendation step: groq_invalid_json model={model_name} -> trying_next_model')
+                        continue
 
-                if response.status_code in (400, 404):
-                    app.logger.warning(f'Recommendation step: groq_http_{response.status_code} model={model_name} -> trying_next_model')
+                provider_message = ''
+                try:
+                    error_payload = response.json()
+                    provider_message = str((error_payload.get('error') or {}).get('message') or error_payload)
+                except Exception:
+                    provider_message = response.text
+
+                classified = classify_ai_provider_error(
+                    http_status=response.status_code,
+                    provider_message=provider_message,
+                    model_name=model_name,
+                )
+                ai_attempts.append(classified)
+                ai_diagnostics = classified
+
+                if classified.get('code') in {'ai_model_not_found', 'ai_token_limit', 'ai_rate_limit', 'ai_provider_unavailable'}:
+                    app.logger.warning(f'Recommendation step: groq_{classified.get("code")} model={model_name} -> trying_next_model')
                     continue
 
                 app.logger.warning(f'Recommendation step: groq_http_{response.status_code} model={model_name} -> local_fallback')
                 break
+        except requests.Timeout:
+            timeout_error = classify_ai_provider_error(
+                provider_message='timeout',
+                model_name='n/a',
+            )
+            ai_attempts.append(timeout_error)
+            ai_diagnostics = timeout_error
+            app.logger.exception('Recommendation step: groq_timeout -> local_fallback')
+        except requests.RequestException as request_error:
+            network_error = classify_ai_provider_error(
+                provider_message=str(request_error),
+                model_name='n/a',
+            )
+            ai_attempts.append(network_error)
+            ai_diagnostics = network_error
+            app.logger.exception(f'Recommendation step: groq_request_exception -> local_fallback ({request_error})')
         except Exception as e:
+            unknown_error = classify_ai_provider_error(
+                provider_message=str(e),
+                model_name='n/a',
+            )
+            ai_attempts.append(unknown_error)
+            ai_diagnostics = unknown_error
             app.logger.exception(f'Recommendation step: groq_exception -> local_fallback ({e})')
+    else:
+        ai_diagnostics = {
+            'code': 'ai_api_key_missing',
+            'user_message': 'Kein aktiver Groq API-Key gefunden. Es wird der Demo-Fallback genutzt.',
+            'retryable': False,
+            'provider': 'groq',
+            'model': None,
+            'http_status': None,
+            'provider_message': 'GROQ_API_KEY fehlt oder Platzhalterwert gesetzt',
+        }
 
     if recommendation is None:
         try:
@@ -2139,11 +2264,13 @@ Falls kein Tool passt, gib trotzdem einen präzisen Workflow mit umsetzbaren Sch
             )
             mode = 'demo'
             model_used = 'fallback_local_rule_based'
+            fallback_variant = 'local_rule_based'
         except Exception as fallback_error:
             app.logger.exception(f'Recommendation step: local_fallback_failed -> generic_help ({fallback_error})')
             recommendation = generate_generic_help_recommendation(task_description)
             mode = 'demo'
             model_used = 'fallback_generic_help'
+            fallback_variant = 'generic_help'
 
     if mode == 'ai':
         if not personalization_note:
@@ -2181,7 +2308,11 @@ Falls kein Tool passt, gib trotzdem einen präzisen Workflow mit umsetzbaren Sch
         'classification': {
             'type': task_type,
             'confidence': confidence,
-        }
+        },
+        'ai_diagnostics': ai_diagnostics,
+        'ai_attempts': ai_attempts[:3],
+        'fallback_variant': fallback_variant,
+        'fallback_reason': ai_diagnostics.get('code') if mode != 'ai' and isinstance(ai_diagnostics, dict) else None,
     }
 
     with recommendation_cache_lock:
@@ -2206,16 +2337,32 @@ def get_recommendation():
     task_description = (data.get('task_description') or '').strip()
 
     if not task_description:
-        return jsonify({'error': 'Keine Aufgabenbeschreibung angegeben'}), 400
+        return jsonify({
+            'error': 'Keine Aufgabenbeschreibung angegeben',
+            'error_code': 'invalid_task_description',
+            'details': {
+                'hint': 'Sende task_description als nicht-leeren String.',
+            }
+        }), 400
 
     try:
         response_payload = build_recommendation_response(task_description)
         return jsonify(response_payload)
     except ValueError as value_error:
-        return jsonify({'error': str(value_error)}), 400
+        return jsonify({
+            'error': str(value_error),
+            'error_code': 'invalid_request',
+        }), 400
     except Exception as err:
         app.logger.exception(f'Recommendation endpoint failed: {err}')
-        return jsonify({'error': 'Interner Fehler bei der Empfehlungserstellung'}), 500
+        return jsonify({
+            'error': 'Interner Fehler bei der Empfehlungserstellung',
+            'error_code': 'recommendation_internal_error',
+            'details': {
+                'exception_type': err.__class__.__name__,
+                'hint': 'Backend-Logs prüfen und Anfrage erneut versuchen.',
+            }
+        }), 500
 
 
 @app.route('/api/telegram/status', methods=['GET'])
@@ -2367,8 +2514,75 @@ def get_kpi_scheduler_status():
     })
 
 
-@app.route('/api/recommendation-feedback', methods=['POST'])
+@app.route('/api/recommendation-feedback', methods=['GET', 'POST'])
 def save_recommendation_feedback():
+    if request.method == 'GET':
+        try:
+            page = max(1, int(str(request.args.get('page', '1')).strip()))
+        except (TypeError, ValueError):
+            page = 1
+
+        try:
+            limit = max(1, min(200, int(str(request.args.get('limit', '50')).strip())))
+        except (TypeError, ValueError):
+            limit = 50
+
+        search_term = (request.args.get('search') or '').strip().lower()
+        min_rating = request.args.get('min_rating')
+        offset = (page - 1) * limit
+
+        query = RecommendationFeedback.query.order_by(RecommendationFeedback.updated_at.desc())
+        all_rows = query.all()
+
+        filtered_rows = []
+        for row in all_rows:
+            if min_rating is not None:
+                try:
+                    minimum = int(str(min_rating).strip())
+                    if row.user_rating is None or row.user_rating < minimum:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+
+            if search_term:
+                haystack = ' '.join([
+                    str(row.task_description or ''),
+                    str(row.area or ''),
+                    str(row.subcategory or ''),
+                    ' '.join(row.recommended_tools_json or []),
+                    str(row.note or ''),
+                ]).lower()
+                if search_term not in haystack:
+                    continue
+
+            filtered_rows.append(row)
+
+        page_rows = filtered_rows[offset:offset + limit]
+
+        payload = []
+        for row in page_rows:
+            item = row.to_dict()
+            history_entry = WorkflowHistory.query.get(row.workflow_history_id)
+            if history_entry:
+                item['history'] = {
+                    'id': history_entry.id,
+                    'task_description': history_entry.task_description,
+                    'created_at': history_entry.created_at.isoformat() if history_entry.created_at else None,
+                    'user_rating': history_entry.user_rating,
+                    'recommendation_json': history_entry.recommendation_json,
+                }
+            payload.append(item)
+
+        return jsonify({
+            'items': payload,
+            'pagination': {
+                'page': page,
+                'limit': limit,
+                'total': len(filtered_rows),
+                'pages': (len(filtered_rows) + limit - 1) // limit,
+            }
+        })
+
     data = request.get_json(silent=True) or {}
 
     workflow_history_id_raw = data.get('workflow_history_id', data.get('id'))

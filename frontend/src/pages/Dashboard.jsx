@@ -61,11 +61,47 @@ export default function Dashboard() {
     return recentTaskLine.length > 50 ? `${recentTaskLine.slice(0, 47)}...` : recentTaskLine
   }, [recentTaskLine])
 
-  const kpiTargetsBelow = useMemo(() => {
-    const targets = kpiSummary?.snapshot?.kpi_targets
-    if (!targets || typeof targets !== 'object') return []
-    return Object.entries(targets).filter(([, info]) => info?.status === 'below-target')
-  }, [kpiSummary])
+  const buildFrontendErrorMessage = (errorCode, fallbackMessage, details) => {
+    const detailText = typeof details?.provider_message === 'string' ? details.provider_message : ''
+
+    if (errorCode === 'ai_token_limit') {
+      return `Tokenlimit erreicht: Anfrage ist zu lang für das aktuelle Modell.${detailText ? ` (${detailText})` : ''}`
+    }
+    if (errorCode === 'ai_rate_limit') {
+      return 'Rate-Limit beim KI-Provider erreicht. Bitte kurz warten und erneut versuchen.'
+    }
+    if (errorCode === 'ai_auth_error' || errorCode === 'ai_api_key_missing') {
+      return 'KI-Key/Authentifizierung fehlerhaft. Prüfe GROQ_API_KEY in backend/.env.'
+    }
+    if (errorCode === 'ai_provider_unavailable' || errorCode === 'ai_timeout') {
+      return 'KI-Provider derzeit nicht erreichbar. Bitte erneut versuchen.'
+    }
+    if (errorCode === 'recommendation_internal_error') {
+      return 'Backend-Fehler bei der Empfehlungserstellung. Bitte Logs prüfen.'
+    }
+
+    return fallbackMessage || 'Unbekannter Fehler bei der Empfehlung.'
+  }
+
+  const parseRecommendationErrorResponse = async (res) => {
+    let payload = {}
+    try {
+      payload = await res.json()
+    } catch {
+      payload = {}
+    }
+
+    const diagnostics = payload?.ai_diagnostics || payload?.details || {}
+    const errorCode = payload?.error_code || diagnostics?.code || null
+    const fallbackMessage = payload?.error || `Server-Fehler (${res.status})`
+    const message = buildFrontendErrorMessage(errorCode, fallbackMessage, diagnostics)
+
+    return {
+      message,
+      errorCode,
+      raw: payload,
+    }
+  }
 
   const estimateTemplateTime = (template) => {
     const tags = (template?.tags || '').toLowerCase()
@@ -118,7 +154,10 @@ export default function Dashboard() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ task_description: prefilledTask })
         })
-        if (!res.ok) throw new Error('Server-Fehler: ' + res.status)
+        if (!res.ok) {
+          const parsedError = await parseRecommendationErrorResponse(res)
+          throw new Error(parsedError.message)
+        }
         const data = await res.json()
         setResult(data)
       } catch (err) {
@@ -231,7 +270,10 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task_description: task })
       })
-      if (!res.ok) throw new Error('Server-Fehler: ' + res.status)
+      if (!res.ok) {
+        const parsedError = await parseRecommendationErrorResponse(res)
+        throw new Error(parsedError.message)
+      }
       const data = await res.json()
       setResult(data)
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100)
@@ -325,6 +367,11 @@ export default function Dashboard() {
     fontWeight: 500,
   }
 
+  const diagnosticDetailText = (result?.ai_diagnostics?.provider_message || '').trim()
+  const shortDiagnosticDetail = diagnosticDetailText.length > 180
+    ? `${diagnosticDetailText.slice(0, 177)}...`
+    : diagnosticDetailText
+
   return (
     <div style={{ padding: '2.4rem 2.7rem', maxWidth: '980px', margin: '0 auto' }}>
       <div style={{ marginBottom: '2.2rem' }}>
@@ -334,27 +381,6 @@ export default function Dashboard() {
         <p style={{ margin: 0, color: 'rgba(255,255,255,0.4)', fontSize: '13px' }}>
           {`Zuletzt: ${truncatedRecentLine}`}
         </p>
-      </div>
-
-      <div style={{ ...baseCardStyle, marginBottom: '1rem', padding: '0.9rem 1rem' }}>
-        <p style={{ ...cardTitleStyle, marginBottom: '0.55rem' }}>KPI · 30 Tage</p>
-        {kpiLoading && <p style={{ margin: 0, fontSize: '0.8rem', color: 'rgba(255,255,255,0.5)' }}>KPI werden geladen…</p>}
-        {!kpiLoading && kpiError && <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--warning)' }}>{kpiError}</p>}
-        {!kpiLoading && !kpiError && kpiSummary?.snapshot && (
-          <div style={{ display: 'grid', gap: '0.45rem' }}>
-            <div style={{ display: 'flex', gap: '0.8rem', flexWrap: 'wrap', fontSize: '0.78rem', color: 'rgba(255,255,255,0.78)' }}>
-              <span>Health: {kpiSummary.snapshot.kpi_health_index ?? 'n/a'}</span>
-              <span>Rating: {kpiSummary.snapshot.avg_user_rating ?? 'n/a'}</span>
-              <span>Top3: {kpiSummary.snapshot.top3_hit_rate ?? 'n/a'}</span>
-              <span>Coverage: {kpiSummary.snapshot.feedback_coverage ?? 'n/a'}</span>
-            </div>
-            {!!kpiTargetsBelow.length && (
-              <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--warning)' }}>
-                Unter Ziel: {kpiTargetsBelow.map(([metric]) => metric).join(', ')}
-              </p>
-            )}
-          </div>
-        )}
       </div>
 
       <div
@@ -475,8 +501,8 @@ export default function Dashboard() {
       )}
 
       {error && (
-        <div style={{ ...baseCardStyle, border: '1px solid rgba(248,113,113,0.35)', marginBottom: '1rem' }}>
-          <p style={{ margin: 0, color: 'var(--danger)', fontSize: '0.87rem' }}>⚠️ {error}</p>
+        <div style={{ ...baseCardStyle, border: '1px solid rgba(248,113,113,0.26)', marginBottom: '1rem', padding: '0.72rem 0.9rem' }}>
+          <p style={{ margin: 0, color: 'var(--danger)', fontSize: '0.82rem', lineHeight: 1.45 }}>⚠ {error}</p>
         </div>
       )}
 
@@ -527,10 +553,23 @@ export default function Dashboard() {
             )}
 
             {result.mode === 'demo' && (
-              <div style={{ ...baseCardStyle, border: '1px solid rgba(251,191,36,0.25)' }}>
+              <div style={{ ...baseCardStyle, border: '1px solid rgba(251,191,36,0.2)', padding: '0.65rem 0.9rem' }}>
                 <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--warning)' }}>
-                  ⚠️ Demo-Modus: Setze deinen Groq API-Key in <code>backend/.env</code>.
+                  ⚠️ Demo-Modus aktiv.
                 </p>
+              </div>
+            )}
+
+            {result.ai_diagnostics?.code && result.ai_diagnostics.code !== 'ai_ok' && (
+              <div style={{ ...baseCardStyle, border: '1px solid rgba(248,113,113,0.22)', padding: '0.72rem 0.9rem' }}>
+                <p style={{ margin: '0 0 0.2rem', fontSize: '0.8rem', color: 'var(--danger)' }}>
+                  KI-Diagnose: {result.ai_diagnostics.user_message || result.ai_diagnostics.code}
+                </p>
+                {!!shortDiagnosticDetail && (
+                  <p style={{ margin: 0, fontSize: '0.73rem', color: 'rgba(255,255,255,0.52)', lineHeight: 1.4 }}>
+                    {shortDiagnosticDetail}
+                  </p>
+                )}
               </div>
             )}
 

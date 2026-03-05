@@ -447,9 +447,13 @@ def get_frontend_report() -> list[str]:
     report.append("Neue Seiten vorhanden:")
     history_page = ROOT / "frontend" / "src" / "pages" / "HistoryPage.jsx"
     config_page = ROOT / "frontend" / "src" / "pages" / "ConfigPage.jsx"
+    school_page = ROOT / "frontend" / "src" / "pages" / "SchoolPage.jsx"
+    research_page = ROOT / "frontend" / "src" / "pages" / "ResearchPage.jsx"
     app_page = ROOT / "frontend" / "src" / "App.jsx"
     report.append(f"  {'✅' if history_page.exists() else '❌'} frontend/src/pages/HistoryPage.jsx")
     report.append(f"  {'✅' if config_page.exists() else '❌'} frontend/src/pages/ConfigPage.jsx")
+    report.append(f"  {'✅' if not school_page.exists() else '⚠️'} frontend/src/pages/SchoolPage.jsx entfernt")
+    report.append(f"  {'✅' if not research_page.exists() else '⚠️'} frontend/src/pages/ResearchPage.jsx entfernt")
 
     report.append("Navigation-Check (App.jsx):")
     if app_page.exists():
@@ -459,9 +463,13 @@ def get_frontend_report() -> list[str]:
         has_profile_route = "/profile" in app_content
         has_old_school_route = "/school" in app_content
         has_old_research_route = "/research" in app_content
+        has_history_import = "HistoryPage" in app_content
+        has_config_import = "ConfigPage" in app_content
         report.append(f"  {'✅' if has_history_route else '❌'} Verlauf-Route vorhanden")
         report.append(f"  {'✅' if has_config_route else '❌'} Config-Route vorhanden")
         report.append(f"  {'✅' if has_profile_route else '❌'} Profil-Route vorhanden")
+        report.append(f"  {'✅' if has_history_import else '❌'} HistoryPage eingebunden")
+        report.append(f"  {'✅' if has_config_import else '❌'} ConfigPage eingebunden")
         report.append(f"  {'✅' if not has_old_school_route else '⚠️'} Schulprojekte-Route entfernt")
         report.append(f"  {'✅' if not has_old_research_route else '⚠️'} Recherche-Route entfernt")
     else:
