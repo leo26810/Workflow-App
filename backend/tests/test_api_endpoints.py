@@ -32,8 +32,7 @@ class TestRecommendationEndpoint:
             data=json.dumps(payload),
             content_type='application/json'
         )
-        # Should return 200 or other success code
-        assert response.status_code in [200, 201, 400, 422]
+        assert response.status_code == 200
         
     def test_recommendation_post_empty(self, client, db_session):
         """Test POST with empty task description."""
@@ -45,8 +44,9 @@ class TestRecommendationEndpoint:
             data=json.dumps(payload),
             content_type='application/json'
         )
-        # Should handle gracefully
-        assert response.status_code in [200, 400, 422]
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data.get('error_code') == 'invalid_task_description'
         
     def test_recommendation_post_missing_field(self, client, db_session):
         """Test POST with missing required fields."""
@@ -56,8 +56,9 @@ class TestRecommendationEndpoint:
             data=json.dumps(payload),
             content_type='application/json'
         )
-        # Should return error or handle gracefully
-        assert response.status_code in [200, 400, 422]
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data.get('error_code') == 'invalid_task_description'
 
 
 class TestProfileEndpoint:

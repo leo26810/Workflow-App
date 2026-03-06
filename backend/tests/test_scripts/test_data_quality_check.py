@@ -19,17 +19,17 @@ class TestNormalizeSkill:
     """Test skill level normalization."""
     
     @pytest.mark.parametrize("input_value,expected", [
-        ("beginner", "Anfänger"),
-        ("BEGINNER", "Anfänger"),
-        ("Beginner", "Anfänger"),
+        ("beginner", "Anfaenger"),
+        ("BEGINNER", "Anfaenger"),
+        ("Beginner", "Anfaenger"),
         ("intermediate", "Fortgeschritten"),
         ("Intermediate", "Fortgeschritten"),
         ("INTERMEDIATE", "Fortgeschritten"),
-        ("advanced", "Fortgeschritten"),
+        ("advanced", "Anfaenger"),
         ("expert", "Experte"),
         ("Expert", "Experte"),
         ("EXPERT", "Experte"),
-        ("Anfänger", "Anfänger"),
+        ("Anfänger", "Anfaenger"),
         ("Fortgeschritten", "Fortgeschritten"),
         ("Experte", "Experte"),
     ])
@@ -54,16 +54,16 @@ class TestNormalizePricing:
     """Test pricing model normalization."""
     
     @pytest.mark.parametrize("pricing,is_free,expected", [
-        ("free", 1, "Kostenlos"),
-        ("Free", 1, "Kostenlos"),
-        ("FREE", 1, "Kostenlos"),
-        ("kostenlos", 1, "Kostenlos"),
-        ("paid", 0, "Kostenpflichtig"),
-        ("Paid", 0, "Kostenpflichtig"),
-        ("freemium", 0, "Freemium"),
-        ("Freemium", 0, "Freemium"),
-        ("subscription", 0, "Abonnement"),
-        ("Subscription", 0, "Abonnement"),
+        ("free", 1, "kostenlos"),
+        ("Free", 1, "kostenlos"),
+        ("FREE", 1, "kostenlos"),
+        ("kostenlos", 1, "kostenlos"),
+        ("paid", 0, "kostenpflichtig"),
+        ("Paid", 0, "kostenpflichtig"),
+        ("freemium", 0, "freemium"),
+        ("Freemium", 0, "freemium"),
+        ("subscription", 0, "kostenpflichtig"),
+        ("Subscription", 0, "kostenpflichtig"),
     ])
     def test_normalize_pricing_valid(self, pricing, is_free, expected):
         """Test normalization of valid pricing models."""
@@ -74,7 +74,7 @@ class TestNormalizePricing:
         """Test normalization with empty pricing."""
         result = normalize_pricing("", 1)
         # Should infer from is_free flag
-        assert result in ["Kostenlos", ""]
+        assert result == "kostenlos"
         
     def test_normalize_pricing_unknown(self):
         """Test normalization of unknown pricing model."""

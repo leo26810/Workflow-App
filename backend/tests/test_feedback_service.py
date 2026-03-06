@@ -53,7 +53,6 @@ class TestFeedbackUpsert:
         history = WorkflowHistory(
             task_description="Test task",
             recommendation_json='{"tools": []}',
-            area="Development",
         )
         db_session.add(history)
         db_session.commit()
@@ -61,21 +60,26 @@ class TestFeedbackUpsert:
         # Test feedback upsert
         result = upsert_recommendation_feedback(
             workflow_history_id=history.id,
-            feedback_text="Great recommendations!",
-            rating=5,
+            note="Great recommendations!",
+            user_rating=5,
         )
-        
-        assert result is not None or result == history.id
+
+        assert result is not None
+        assert result.workflow_history_id == history.id
+        assert result.user_rating == 5
+        assert result.note == "Great recommendations!"
         
     def test_upsert_feedback_invalid_id(self, db_session):
         """Test upserting feedback with non-existent history ID."""
         result = upsert_recommendation_feedback(
             workflow_history_id=999999,
-            feedback_text="Test",
-            rating=3,
+            note="Test",
+            user_rating=3,
         )
-        # Should handle gracefully
-        assert result is not None or result is None
+        # Service currently does not validate history existence directly.
+        assert result is not None
+        assert result.workflow_history_id == 999999
+        assert result.user_rating == 3
 
 
 class TestFeedbackRetrieval:
