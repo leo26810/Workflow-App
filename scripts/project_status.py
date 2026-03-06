@@ -655,9 +655,9 @@ def get_frontend_report() -> list[str]:
     if dashboard_page.exists():
         dashboard_content = dashboard_page.read_text(encoding="utf-8", errors="ignore")
         dashboard_checks = [
-            ("domainsData", "Dashboard lädt Domains"),
-            ("toolsCatalog", "Dashboard lädt Tool-Katalog"),
-            ("knowledgeStats", "Dashboard zeigt Wissensmetriken"),
+            ("categoriesData", "Dashboard lädt Categories"),
+            ("setToolsCatalog", "Dashboard lädt Tool-Katalog"),
+            ("kpiSummary", "Dashboard zeigt KPI-Metriken"),
             ("pricing_model", "Dashboard zeigt Pricing"),
             ("skill_requirement", "Dashboard zeigt Skill-Level"),
             ("platform", "Dashboard zeigt Plattform"),

@@ -5,8 +5,6 @@ from sqlalchemy import text
 
 from extensions import db
 
-from extensions import db
-
 
 system_bp = Blueprint('system', __name__)
 
