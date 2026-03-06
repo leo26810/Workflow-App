@@ -7,9 +7,7 @@ import json
 from datetime import date, datetime, timedelta
 from typing import Any, TypeVar
 
-from flask_sqlalchemy import SQLAlchemy
-
-db = SQLAlchemy()
+from extensions import db
 ModelT = TypeVar('ModelT')
 
 
@@ -62,6 +60,11 @@ class Tool(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
     category = db.Column(db.String(100), nullable=False)  # z.B. Bilderstellung, Recherche, Schule
+    domain = db.Column(db.String(100), nullable=True, index=True)
+    tags = db.Column(db.String(500), nullable=True)
+    use_case = db.Column(db.String(1000), nullable=True)
+    platform = db.Column(db.String(200), nullable=True)
+    pricing_model = db.Column(db.String(100), nullable=True)
     url = db.Column(db.String(500), nullable=True)
     notes = db.Column(db.String(1000), nullable=True)
     is_free = db.Column(db.Boolean, nullable=False, default=True)
@@ -78,6 +81,11 @@ class Tool(db.Model):
             'id': self.id,
             'name': self.name,
             'category': self.category,
+            'domain': self.domain,
+            'tags': self.tags,
+            'use_case': self.use_case,
+            'platform': self.platform,
+            'pricing_model': self.pricing_model,
             'url': self.url,
             'notes': self.notes,
             'is_free': self.is_free,
@@ -227,6 +235,29 @@ class SkillProgress(db.Model):
         }
 
 
+class Domain(db.Model):
+    __tablename__ = 'domain'
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), unique=True, nullable=False)
+    icon = db.Column(db.String(20), nullable=True)
+    description = db.Column(db.String(500), nullable=True)
+    tags = db.Column(db.String(500), nullable=True)
+    sort_order = db.Column(db.Integer, default=0)
+    categories = db.relationship('WorkflowCategory', backref='domain', lazy=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'icon': self.icon,
+            'description': self.description,
+            'tags': self.tags,
+            'sort_order': self.sort_order,
+            'category_count': len(self.categories),
+        }
+
+
 class WorkflowCategory(db.Model):
     """Die drei Hauptbereiche der App."""
     __tablename__ = 'workflow_categories'
@@ -234,6 +265,9 @@ class WorkflowCategory(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False, unique=True)
     icon = db.Column(db.String(10), nullable=False)
+    domain_id = db.Column(db.Integer, db.ForeignKey('domain.id'), nullable=True)
+    tags = db.Column(db.String(500), nullable=True)
+    sort_order = db.Column(db.Integer, default=0)
     description = db.Column(db.String(500), nullable=True)
     subcategories = db.relationship('SubCategory', backref='category', lazy=True, cascade='all, delete-orphan')
 
@@ -242,6 +276,8 @@ class WorkflowCategory(db.Model):
             'id': self.id,
             'name': self.name,
             'icon': self.icon,
+            'domain_id': self.domain_id,
+            'tags': self.tags,
             'description': self.description,
         }
 
@@ -329,30 +365,8 @@ class ResearchSession(db.Model):
         }
 
 
-class SchoolProject(db.Model):
-    """Tracking für Schulprojekte."""
-    __tablename__ = 'school_projects'
-
-    id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(250), nullable=False)
-    subject = db.Column(db.String(120), nullable=False)
-    deadline = db.Column(db.Date, nullable=True)
-    status = db.Column(db.String(30), nullable=False, default='offen')  # offen / in_arbeit / fertig
-    description = db.Column(db.String(1500), nullable=True)
-    notes = db.Column(db.String(2000), nullable=True)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'title': self.title,
-            'subject': self.subject,
-            'deadline': self.deadline.isoformat() if self.deadline else None,
-            'status': self.status,
-            'description': self.description,
-            'notes': self.notes,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-        }
+db.Index('ix_tool_domain', Tool.domain)
+db.Index('ix_tool_tags', Tool.tags)
 
 
 def seed_categories():

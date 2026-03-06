@@ -30,6 +30,7 @@ export default function Dashboard() {
   const [profileName, setProfileName] = useState('Nutzer')
   const [recentTaskLine, setRecentTaskLine] = useState('')
   const [categoriesData, setCategoriesData] = useState([])
+  const [toolsCatalog, setToolsCatalog] = useState([])
   const [kpiSummary, setKpiSummary] = useState(null)
   const [kpiLoading, setKpiLoading] = useState(false)
   const [kpiError, setKpiError] = useState(null)
@@ -60,6 +61,16 @@ export default function Dashboard() {
     if (!recentTaskLine) return '—'
     return recentTaskLine.length > 50 ? `${recentTaskLine.slice(0, 47)}...` : recentTaskLine
   }, [recentTaskLine])
+
+  const catalogByName = useMemo(() => {
+    const map = new Map()
+    for (const tool of toolsCatalog) {
+      const key = (tool?.name || '').trim().toLowerCase()
+      if (!key || map.has(key)) continue
+      map.set(key, tool)
+    }
+    return map
+  }, [toolsCatalog])
 
   const buildFrontendErrorMessage = (errorCode, fallbackMessage, details) => {
     const detailText = typeof details?.provider_message === 'string' ? details.provider_message : ''
@@ -239,11 +250,17 @@ export default function Dashboard() {
         }
 
         const kpiRes = await fetch('/api/kpis/report?days=30')
+        const toolsRes = await fetch('/api/tools?limit=500&page=1')
         if (kpiRes.ok) {
           const kpiJson = await kpiRes.json()
           if (alive) setKpiSummary(kpiJson)
         } else if (alive) {
           setKpiError(`KPI nicht verfügbar (${kpiRes.status})`)
+        }
+
+        if (toolsRes.ok) {
+          const toolsJson = await toolsRes.json()
+          if (alive) setToolsCatalog(Array.isArray(toolsJson?.items) ? toolsJson.items : [])
         }
       } catch {
         if (alive) setKpiError('KPI derzeit nicht erreichbar')
@@ -371,6 +388,23 @@ export default function Dashboard() {
   const shortDiagnosticDetail = diagnosticDetailText.length > 180
     ? `${diagnosticDetailText.slice(0, 177)}...`
     : diagnosticDetailText
+  const whyTheseToolsText = (result?.recommendation?.why_these_tools || '').trim() || 'Die Tools passen zu Aufgabe, Skill-Level und bisherigen positiven Bewertungen.'
+
+  const getToolMeta = (tool) => {
+    const key = (tool?.name || '').trim().toLowerCase()
+    if (!key) return tool || {}
+    const catalogItem = catalogByName.get(key)
+    return catalogItem ? { ...catalogItem, ...tool } : (tool || {})
+  }
+
+  const getTagList = (text) => {
+    if (!text) return []
+    return String(text)
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, 4)
+  }
 
   return (
     <div style={{ padding: '2.4rem 2.7rem', maxWidth: '980px', margin: '0 auto' }}>
@@ -603,20 +637,65 @@ export default function Dashboard() {
                 <p style={cardTitleStyle}>Empfohlene Tools</p>
                 <div>
                   {result.recommendation.recommended_tools.map((tool, i) => (
+                    (() => {
+                      const metaTool = getToolMeta(tool)
+                      const toolTags = getTagList(metaTool.tags)
+                      return (
                     <div key={i} style={{ padding: '0.58rem 0', borderBottom: i < result.recommendation.recommended_tools.length - 1 ? '1px solid rgba(255,255,255,0.08)' : 'none' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.8rem' }}>
                         <div>
-                          <p style={{ margin: 0, fontSize: '14px', color: '#FFFFFF', fontWeight: 600 }}>{tool.name}</p>
-                          <p style={{ margin: '0.2rem 0 0', fontSize: '13px', color: 'rgba(255,255,255,0.5)' }}>{tool.reason}</p>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap' }}>
+                            <p style={{ margin: 0, fontSize: '14px', color: '#FFFFFF', fontWeight: 600 }}>{metaTool.name || tool.name}</p>
+                            {typeof tool.match_score === 'number' && tool.match_score > 0 && (
+                              <span className="inline-flex items-center rounded-full border border-gray-500/40 bg-gray-500/20 px-2 py-0.5 text-[11px] leading-none text-gray-300">
+                                {Math.round(tool.match_score)} Pkt
+                              </span>
+                            )}
+                            {!!(metaTool.domain || '').trim() && (
+                              <span className="inline-flex items-center rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[11px] leading-none text-cyan-200">
+                                {metaTool.domain}
+                              </span>
+                            )}
+                            {!!(metaTool.pricing_model || '').trim() && (
+                              <span className="inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] leading-none text-emerald-200">
+                                {metaTool.pricing_model}
+                              </span>
+                            )}
+                            {!!(metaTool.skill_requirement || '').trim() && (
+                              <span className="inline-flex items-center rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[11px] leading-none text-amber-200">
+                                Level: {metaTool.skill_requirement}
+                              </span>
+                            )}
+                          </div>
+                          <p style={{ margin: '0.2rem 0 0', fontSize: '13px', color: 'rgba(255,255,255,0.5)' }}>
+                            {tool.reason || tool.match_reason || metaTool.best_for || tool.best_for || ''}
+                          </p>
+                          {!!(metaTool.use_case || '').trim() && (
+                            <p style={{ margin: '0.25rem 0 0', fontSize: '12px', color: 'rgba(255,255,255,0.62)' }}>
+                              {metaTool.use_case}
+                            </p>
+                          )}
+                          {toolTags.length > 0 && (
+                            <div style={{ marginTop: '0.28rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                              {toolTags.map((tag) => (
+                                <span key={`${metaTool.name}-${tag}`} className="tag">#{tag}</span>
+                              ))}
+                            </div>
+                          )}
+                          {!!(metaTool.platform || '').trim() && (
+                            <p style={{ margin: '0.25rem 0 0', fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>
+                              Plattform: {metaTool.platform}
+                            </p>
+                          )}
                           {!!(tool.specific_tip || '').trim() && (
                             <p style={{ margin: '0.24rem 0 0', fontSize: '12px', color: 'rgba(255,255,255,0.52)', fontStyle: 'italic' }}>
                               💡 {tool.specific_tip}
                             </p>
                           )}
                         </div>
-                        {!!(tool.url || '').trim() && (
+                        {!!(metaTool.url || tool.url || '').trim() && (
                           <a
-                            href={tool.url}
+                            href={metaTool.url || tool.url}
                             target="_blank"
                             rel="noopener noreferrer"
                             style={{ fontSize: '12px', color: 'var(--accent2)', textDecoration: 'none', whiteSpace: 'nowrap' }}
@@ -626,17 +705,17 @@ export default function Dashboard() {
                         )}
                       </div>
                     </div>
+                      )
+                    })()
                   ))}
                 </div>
 
-                {!!(result.recommendation?.why_these_tools || '').trim() && (
-                  <div style={{ marginTop: '0.75rem', paddingTop: '0.72rem', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-                    <p style={{ ...cardTitleStyle, marginBottom: '0.35rem' }}>🧠 Warum diese Tools</p>
-                    <p style={{ margin: 0, fontSize: '14px', color: 'rgba(255,255,255,0.85)', lineHeight: 1.5 }}>
-                      {result.recommendation.why_these_tools}
-                    </p>
-                  </div>
-                )}
+                <div style={{ marginTop: '0.75rem', paddingTop: '0.72rem', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                  <p style={{ ...cardTitleStyle, marginBottom: '0.35rem' }}>🧠 Warum diese Tools</p>
+                  <p style={{ margin: 0, fontSize: '14px', color: 'rgba(255,255,255,0.85)', lineHeight: 1.5 }}>
+                    {whyTheseToolsText}
+                  </p>
+                </div>
 
                 {result.area === 'Internet-Recherche' && (
                   <div style={{ marginTop: '0.75rem', paddingTop: '0.72rem', borderTop: '1px solid rgba(255,255,255,0.08)' }}>

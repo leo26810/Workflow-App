@@ -3,7 +3,6 @@
 
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
@@ -18,14 +17,16 @@ IGNORED_DIRS = {"node_modules", "__pycache__", ".git", "venv", ".venv", "dist"}
 
 CORE_FILES = [
     Path("scripts/project_status.py"),
+    Path("scripts/data_quality_check.py"),
+    Path("scripts/migrate_schema_preserve.py"),
+    Path("scripts/import_knowledge.py"),
     Path("scripts/kpi_auto_report.py"),
-    Path("scripts/import_all_data.py"),
-    Path("scripts/import_tools.py"),
     Path("scripts/cleanup_db.py"),
     Path("backend/app.py"),
     Path("backend/models.py"),
     Path("backend/requirements.txt"),
     Path("backend/.env.example"),
+    Path("backend/routes/domains.py"),
     Path("frontend/package.json"),
     Path("frontend/vite.config.js"),
     Path("frontend/index.html"),
@@ -45,16 +46,20 @@ REQUIRED_DB_TABLES = [
     "task_templates",
     "user_context",
     "research_sessions",
-    "school_projects",
     "recommendation_feedback",
 ]
 
 REQUIRED_ENDPOINTS = [
     "/api/health",
+    "/api/system/stats",
+    "/api/recommendation",
+    "/api/workflow-history",
+    "/api/tools",
+    "/api/domains",
     "/api/categories",
     "/api/task-templates",
     "/api/research-session",
-    "/api/school-projects",
+    "/api/research-sessions",
     "/api/user-context",
     "/api/kpis",
     "/api/kpis/targets",
@@ -223,17 +228,101 @@ def get_db_report(db_path: Path) -> list[str]:
     return report
 
 
-def extract_model_fallback_list(app_path: Path) -> list[str]:
-    if not app_path.exists():
-        return []
+def get_knowledge_base_report(db_path: Path) -> list[str]:
+    report = []
+    connection = sqlite3.connect(db_path)
+    cursor = connection.cursor()
 
-    text = app_path.read_text(encoding="utf-8", errors="ignore")
-    block_match = re.search(r"candidate_models\s*=\s*\[(.*?)\]", text, re.DOTALL)
-    if not block_match:
-        return []
+    counts = {
+        "domains": None,
+        "workflow_categories": None,
+        "sub_categories": None,
+        "task_templates": None,
+        "tools": None,
+    }
 
-    block = block_match.group(1)
-    return re.findall(r"['\"]([^'\"]+)['\"]", block)
+    for label, table_name in [
+        ("domains", "domain"),
+        ("workflow_categories", "workflow_categories"),
+        ("sub_categories", "sub_categories"),
+        ("task_templates", "task_templates"),
+        ("tools", "tools"),
+    ]:
+        try:
+            cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
+            counts[label] = cursor.fetchone()[0]
+        except sqlite3.Error:
+            counts[label] = None
+
+    domains_count = counts["domains"]
+    if domains_count is None:
+        report.append("  ❌ domains: Tabelle fehlt")
+    else:
+        status = "✅" if domains_count > 0 else "❌"
+        report.append(f"  {status} domains: {domains_count} Einträge")
+
+    for label in ["workflow_categories", "sub_categories", "task_templates"]:
+        value = counts[label]
+        if value is None:
+            report.append(f"  ❌ {label}: Tabelle fehlt")
+        else:
+            report.append(f"  ✅ {label}: {value} Einträge")
+
+    # Coverage checks for new taxonomy fields
+    try:
+        cursor.execute(
+            'SELECT COUNT(*) FROM "workflow_categories" WHERE domain_id IS NOT NULL'
+        )
+        categories_with_domain = cursor.fetchone()[0]
+        total_categories = counts["workflow_categories"] or 0
+        category_domain_coverage = (categories_with_domain / total_categories * 100.0) if total_categories else 0.0
+        report.append(
+            f"  Kategorien mit Domain-Link: {category_domain_coverage:.1f}% ({categories_with_domain} von {total_categories})"
+        )
+    except sqlite3.Error:
+        report.append("  Kategorien mit Domain-Link: n/a")
+
+    tools_count = counts["tools"]
+    if tools_count is None:
+        report.append("  ❌ tools: Tabelle fehlt")
+        report.append("  Tool-Tag-Abdeckung: n/a (0 von 0 Tools haben Tags)")
+    else:
+        report.append(f"  ✅ tools: {tools_count} Einträge (Ziel: 500+)")
+        try:
+            cursor.execute(
+                'SELECT COUNT(*) FROM "tools" WHERE tags IS NOT NULL AND LENGTH(tags) > 5'
+            )
+            tagged_tools = cursor.fetchone()[0]
+        except sqlite3.Error:
+            tagged_tools = 0
+
+        coverage = (tagged_tools / tools_count * 100.0) if tools_count > 0 else 0.0
+        report.append(
+            f"  Tool-Tag-Abdeckung: {coverage:.1f}% ({tagged_tools} von {tools_count} Tools haben Tags)"
+        )
+
+        # Coverage checks for new tool metadata fields
+        for field_name, label in [
+            ("domain", "Tool-Domain-Abdeckung"),
+            ("use_case", "Tool-UseCase-Abdeckung"),
+            ("platform", "Tool-Plattform-Abdeckung"),
+            ("pricing_model", "Tool-Pricing-Abdeckung"),
+            ("skill_requirement", "Tool-Skill-Abdeckung"),
+        ]:
+            try:
+                cursor.execute(
+                    f'SELECT COUNT(*) FROM "tools" WHERE {field_name} IS NOT NULL AND LENGTH(TRIM({field_name})) > 0'
+                )
+                filled_count = cursor.fetchone()[0]
+                field_coverage = (filled_count / tools_count * 100.0) if tools_count > 0 else 0.0
+                report.append(
+                    f"  {label}: {field_coverage:.1f}% ({filled_count} von {tools_count})"
+                )
+            except sqlite3.Error:
+                report.append(f"  {label}: n/a")
+
+    connection.close()
+    return report
 
 
 def parse_requirement_name(req_line: str) -> str:
@@ -321,30 +410,78 @@ def get_backend_report() -> list[str]:
         report.append("  ⚠️ backend/.env fehlt")
 
     app_path = ROOT / "backend" / "app.py"
-    report.append("API-Endpunkt-Checks (app.py):")
+    routes_dir = ROOT / "backend" / "routes"
+    extensions_path = ROOT / "backend" / "extensions.py"
+    runtime_path = ROOT / "backend" / "services" / "runtime.py"
+    services_dir = ROOT / "backend" / "services"
+    recommendation_service_path = services_dir / "recommendation_service.py"
+
+    report.append("Refactor-Struktur-Checks:")
+    report.append(f"  {'✅' if routes_dir.exists() else '❌'} backend/routes/ Ordner vorhanden")
+    report.append(f"  {'✅' if extensions_path.exists() else '❌'} backend/extensions.py vorhanden")
+
     if app_path.exists():
-        app_content = app_path.read_text(encoding="utf-8", errors="ignore")
+        with app_path.open(encoding="utf-8", errors="ignore") as app_file:
+            app_line_count = sum(1 for _ in app_file)
+        if app_line_count < 100:
+            report.append(f"  ✅ backend/app.py unter 100 Zeilen ({app_line_count})")
+        elif app_line_count > 200:
+            report.append(f"  ⚠️ backend/app.py ueber 200 Zeilen ({app_line_count})")
+        else:
+            report.append(f"  ⚠️ backend/app.py zwischen 100 und 200 Zeilen ({app_line_count})")
+    else:
+        report.append("  ❌ backend/app.py fehlt")
+
+    source_paths = [app_path, runtime_path]
+    if routes_dir.exists():
+        source_paths.extend(sorted(routes_dir.glob("*.py")))
+    if services_dir.exists():
+        source_paths.extend(sorted(services_dir.glob("*.py")))
+
+    backend_content = ""
+    for source_path in source_paths:
+        if source_path.exists():
+            backend_content += "\n" + source_path.read_text(encoding="utf-8", errors="ignore")
+
+    report.append("API-Endpunkt-Checks (backend app+routes+services):")
+    if backend_content:
         for endpoint in REQUIRED_ENDPOINTS:
-            status = "✅" if endpoint in app_content else "❌"
+            status = "✅" if endpoint in backend_content else "❌"
             report.append(f"  {status} {endpoint}")
 
-        report.append("Telegram-Code-Checks (app.py):")
-        has_parse_mode_html = "'parse_mode': 'HTML'" in app_content
-        has_chat_filter = "def is_chat_allowed(" in app_content
-        has_polling_loop = "def telegram_polling_loop(" in app_content
-        has_worker_loop = "def telegram_worker_loop(" in app_content
+        report.append("Recommendation-Micro-Prompt-Checks (recommendation_service.py):")
+        if recommendation_service_path.exists():
+            recommendation_service_content = recommendation_service_path.read_text(encoding="utf-8", errors="ignore")
+            required_recommendation_functions = [
+                "summarize_user_context",
+                "build_micro_prompt",
+                "call_groq_with_micro_prompt",
+            ]
+            for function_name in required_recommendation_functions:
+                marker = f"def {function_name}("
+                status = "✅" if marker in recommendation_service_content else "❌"
+                report.append(f"  {status} {function_name}")
+        else:
+            report.append("  ❌ backend/services/recommendation_service.py fehlt")
+
+        report.append("Telegram-Code-Checks (backend app+services):")
+        has_parse_mode_html = "'parse_mode': 'HTML'" in backend_content
+        has_chat_filter = "def is_chat_allowed(" in backend_content
+        has_polling_loop = "def telegram_polling_loop(" in backend_content
+        has_worker_loop = "def telegram_worker_loop(" in backend_content
         report.append(f"  {'✅' if has_parse_mode_html else '⚠️'} parse_mode HTML in sendMessage")
         report.append(f"  {'✅' if has_chat_filter else '❌'} Allowlist-Filter vorhanden")
         report.append(f"  {'✅' if has_polling_loop else '❌'} Polling-Loop vorhanden")
         report.append(f"  {'✅' if has_worker_loop else '❌'} Worker-Loop vorhanden")
 
-        fallback_models = extract_model_fallback_list(app_path)
-        if fallback_models:
-            report.append("Groq Modell-Fallback-Liste:")
-            for model in fallback_models:
-                report.append(f"  - {model}")
+        if recommendation_service_path.exists():
+            recommendation_service_content = recommendation_service_path.read_text(encoding="utf-8", errors="ignore")
+            has_micro_prompt_call = "call_groq_with_micro_prompt" in recommendation_service_content
+            has_tool_need_map = "TOOL_NEED_MAP" in recommendation_service_content
+            report.append(f"{'✅' if has_micro_prompt_call else '❌'} Micro-Prompt-System: call_groq_with_micro_prompt vorhanden")
+            report.append(f"{'✅' if has_tool_need_map else '❌'} Tool-Matching: TOOL_NEED_MAP vorhanden")
         else:
-            report.append("Groq Modell-Fallback-Liste: nicht gefunden")
+            report.append("❌ backend/services/recommendation_service.py fehlt")
 
         report.append("Telegram Runtime-Status (wenn Backend läuft):")
         try:
@@ -363,6 +500,17 @@ def get_backend_report() -> list[str]:
 
         report.append("KPI Runtime-Status (wenn Backend läuft):")
         try:
+            with urlrequest.urlopen("http://localhost:5000/api/health", timeout=2) as response:
+                if response.status != 200:
+                    report.append(f"  ⚠️ /api/health HTTP {response.status}")
+                else:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    groq_configured = bool(payload.get("groq_configured"))
+                    if groq_configured:
+                        report.append("  ✅ KI-Modus: Micro-Prompt-System aktiv")
+                    else:
+                        report.append("  ⚠️ KI-Modus: Regel-Fallback aktiv")
+
             with urlrequest.urlopen("http://localhost:5000/api/kpis?days=30", timeout=2) as response:
                 if response.status != 200:
                     report.append(f"  ⚠️ /api/kpis HTTP {response.status}")
@@ -401,7 +549,7 @@ def get_backend_report() -> list[str]:
         except (urlerror.URLError, TimeoutError, json.JSONDecodeError) as exc:
             report.append(f"  ⚠️ KPI-Scheduler nicht erreichbar oder ungültig: {exc}")
     else:
-        report.append("  ❌ backend/app.py fehlt")
+        report.append("  ❌ Keine Backend-Quelldateien für Endpoint-Checks gefunden")
 
     return report
 
@@ -447,12 +595,10 @@ def get_frontend_report() -> list[str]:
     report.append("Neue Seiten vorhanden:")
     history_page = ROOT / "frontend" / "src" / "pages" / "HistoryPage.jsx"
     config_page = ROOT / "frontend" / "src" / "pages" / "ConfigPage.jsx"
-    school_page = ROOT / "frontend" / "src" / "pages" / "SchoolPage.jsx"
     research_page = ROOT / "frontend" / "src" / "pages" / "ResearchPage.jsx"
     app_page = ROOT / "frontend" / "src" / "App.jsx"
     report.append(f"  {'✅' if history_page.exists() else '❌'} frontend/src/pages/HistoryPage.jsx")
     report.append(f"  {'✅' if config_page.exists() else '❌'} frontend/src/pages/ConfigPage.jsx")
-    report.append(f"  {'✅' if not school_page.exists() else '⚠️'} frontend/src/pages/SchoolPage.jsx entfernt")
     report.append(f"  {'✅' if not research_page.exists() else '⚠️'} frontend/src/pages/ResearchPage.jsx entfernt")
 
     report.append("Navigation-Check (App.jsx):")
@@ -461,7 +607,6 @@ def get_frontend_report() -> list[str]:
         has_history_route = "/history" in app_content
         has_config_route = "/config" in app_content
         has_profile_route = "/profile" in app_content
-        has_old_school_route = "/school" in app_content
         has_old_research_route = "/research" in app_content
         has_history_import = "HistoryPage" in app_content
         has_config_import = "ConfigPage" in app_content
@@ -470,7 +615,6 @@ def get_frontend_report() -> list[str]:
         report.append(f"  {'✅' if has_profile_route else '❌'} Profil-Route vorhanden")
         report.append(f"  {'✅' if has_history_import else '❌'} HistoryPage eingebunden")
         report.append(f"  {'✅' if has_config_import else '❌'} ConfigPage eingebunden")
-        report.append(f"  {'✅' if not has_old_school_route else '⚠️'} Schulprojekte-Route entfernt")
         report.append(f"  {'✅' if not has_old_research_route else '⚠️'} Recherche-Route entfernt")
     else:
         report.append("  ❌ frontend/src/App.jsx fehlt")
@@ -505,6 +649,42 @@ def get_frontend_report() -> list[str]:
     else:
         report.append("  ❌ frontend/src/pages/ConfigPage.jsx: fehlt")
 
+    report.append("Knowledge-UI-Checks (Dashboard/Profile):")
+    dashboard_page = ROOT / "frontend" / "src" / "pages" / "Dashboard.jsx"
+    profile_page = ROOT / "frontend" / "src" / "pages" / "ProfilePage.jsx"
+    if dashboard_page.exists():
+        dashboard_content = dashboard_page.read_text(encoding="utf-8", errors="ignore")
+        dashboard_checks = [
+            ("domainsData", "Dashboard lädt Domains"),
+            ("toolsCatalog", "Dashboard lädt Tool-Katalog"),
+            ("knowledgeStats", "Dashboard zeigt Wissensmetriken"),
+            ("pricing_model", "Dashboard zeigt Pricing"),
+            ("skill_requirement", "Dashboard zeigt Skill-Level"),
+            ("platform", "Dashboard zeigt Plattform"),
+            ("use_case", "Dashboard zeigt Use-Case"),
+        ]
+        for marker, label in dashboard_checks:
+            status = "✅" if marker in dashboard_content else "❌"
+            report.append(f"  {status} {label}")
+    else:
+        report.append("  ❌ frontend/src/pages/Dashboard.jsx fehlt")
+
+    if profile_page.exists():
+        profile_content = profile_page.read_text(encoding="utf-8", errors="ignore")
+        profile_checks = [
+            ("toolStats", "Profile zeigt Tool-Coverage-Metriken"),
+            ("categoryOptions", "Profile nutzt dynamische Kategorien"),
+            ("tool.domain", "Profile zeigt Tool-Domain"),
+            ("tool.pricing_model", "Profile zeigt Tool-Pricing"),
+            ("tool.use_case", "Profile zeigt Tool-Use-Case"),
+            ("getTagList", "Profile rendert Tool-Tags"),
+        ]
+        for marker, label in profile_checks:
+            status = "✅" if marker in profile_content else "❌"
+            report.append(f"  {status} {label}")
+    else:
+        report.append("  ❌ frontend/src/pages/ProfilePage.jsx fehlt")
+
     report.append("Frontend JSX-Dateien:")
     jsx_files = []
     frontend_src = ROOT / "frontend" / "src"
@@ -520,6 +700,82 @@ def get_frontend_report() -> list[str]:
         line_count = count_lines(file_path)
         modified = datetime.fromtimestamp(file_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
         report.append(f"  - {rel} | Zeilen: {line_count} | Letzte Änderung: {modified}")
+
+    return report
+
+
+def get_scripts_report() -> list[str]:
+    report = []
+
+    script_checks = [
+        (ROOT / "scripts" / "import_knowledge.py", ["--dry-run", "validate_payload", "import_payload"], "Knowledge-Import"),
+        (ROOT / "scripts" / "data_quality_check.py", ["--fix", "print_audit", "apply_fixes"], "Data-Quality-Check"),
+        (ROOT / "scripts" / "migrate_schema_preserve.py", ["ALTER TABLE", "domain", "ix_tool_domain"], "Schema-Migration"),
+    ]
+
+    for path, markers, label in script_checks:
+        if not path.exists():
+            report.append(f"  ❌ {label}: {path.relative_to(ROOT)} fehlt")
+            continue
+
+        content = path.read_text(encoding="utf-8", errors="ignore")
+        report.append(f"  ✅ {label}: {path.relative_to(ROOT)} vorhanden")
+        for marker in markers:
+            status = "✅" if marker in content else "⚠️"
+            report.append(f"    {status} Marker `{marker}`")
+
+    report.append("  Legacy-Importer (archiviert):")
+    legacy_checks = [
+        (ROOT / "scripts" / "archive" / "import_all_data.py", "scripts/archive/import_all_data.py"),
+        (ROOT / "scripts" / "archive" / "import_tools.py", "scripts/archive/import_tools.py"),
+    ]
+    for path, label in legacy_checks:
+        if path.exists():
+            report.append(f"    ✅ {label} vorhanden (deprecated)")
+        else:
+            report.append(f"    ⚠️ {label} nicht gefunden (optional, da deprecated)")
+
+    return report
+
+
+def get_docs_report() -> list[str]:
+    report = []
+
+    doc_path = ROOT / "PROJEKT_DOKUMENTATION.md"
+    readme_path = ROOT / "README.md"
+
+    report.append("Projektdoku-Checks:")
+    if not doc_path.exists():
+        report.append("  ❌ PROJEKT_DOKUMENTATION.md fehlt")
+    else:
+        content = doc_path.read_text(encoding="utf-8", errors="ignore")
+        checks = [
+            ("/api/domains", "Domains-Endpunkt dokumentiert"),
+            ("import_knowledge.py", "Knowledge-Import dokumentiert"),
+            ("data_quality_check.py", "Data-Quality-Check dokumentiert"),
+            ("migrate_schema_preserve.py", "Schema-Migration dokumentiert"),
+            ("domain", "Domain-Modell dokumentiert"),
+            ("pricing_model", "Erweiterte Tool-Felder dokumentiert"),
+        ]
+        for marker, label in checks:
+            status = "✅" if marker in content else "⚠️"
+            report.append(f"  {status} {label}")
+
+    report.append("README-Checks:")
+    if not readme_path.exists():
+        report.append("  ❌ README.md fehlt")
+    else:
+        content = readme_path.read_text(encoding="utf-8", errors="ignore")
+        checks = [
+            ("/api/domains", "Domains-Endpunkt in README"),
+            ("/api/categories", "Kategorien-Endpunkt in README"),
+            ("import_knowledge.py", "Knowledge-Import in README"),
+            ("data_quality_check.py", "Data-Quality-Check in README"),
+            ("migrate_schema_preserve.py", "Schema-Migration in README"),
+        ]
+        for marker, label in checks:
+            status = "✅" if marker in content else "⚠️"
+            report.append(f"  {status} {label}")
 
     return report
 
@@ -566,7 +822,9 @@ def cleanup_old_logs(log_dir: Path, retention_days: int) -> None:
 
 def main():
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
+        reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8")
     except Exception:
         pass
 
@@ -597,6 +855,15 @@ def main():
         out.extend(get_db_report(db_path))
 
     out.append("")
+    out.append("WISSENSBASIS-CHECK")
+    out.append("\nWISSENSBASIS")
+    out.append("-" * 80)
+    if db_path is None:
+        out.append("  ❌ Keine Datenbank gefunden")
+    else:
+        out.extend(get_knowledge_base_report(db_path))
+
+    out.append("")
     out.append("BACKEND")
     out.append("-" * 80)
     out.extend(get_backend_report())
@@ -605,6 +872,16 @@ def main():
     out.append("FRONTEND")
     out.append("-" * 80)
     out.extend(get_frontend_report())
+
+    out.append("")
+    out.append("SCRIPTS")
+    out.append("-" * 80)
+    out.extend(get_scripts_report())
+
+    out.append("")
+    out.append("DOKUMENTATION")
+    out.append("-" * 80)
+    out.extend(get_docs_report())
 
     out.append("")
     out.append("CODE-ÜBERBLICK")

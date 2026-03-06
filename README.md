@@ -92,10 +92,18 @@ docker compose down -v
 
 ## API-Endpunkte
 
+- `POST /api/recommendation`
 - `GET /api/profile`
 - `POST /api/profile`
-- `POST /api/recommendation`
 - `GET /api/health`
+- `GET /api/domains`
+- `GET /api/categories`
+- `GET /api/task-templates?subcategory=<name>`
+- `GET /api/tools?page=1&limit=20`
+- `GET /api/workflow-history`
+- `POST /api/workflow-history`
+- `GET /api/research-sessions`
+- `POST /api/research-session`
 - `GET /api/kpis`
 - `GET /api/kpis/targets`
 - `GET /api/kpis/report`
@@ -153,17 +161,33 @@ Alle Kontroll-/Import-/Cleanup-Skripte liegen zentral im Ordner `scripts/`:
 
 ```bash
 python scripts/project_status.py
+python scripts/data_quality_check.py
+python scripts/data_quality_check.py --fix
+python scripts/migrate_schema_preserve.py
+python scripts/import_knowledge.py --file data/deine_datei.json
+python scripts/import_knowledge.py --dir data --dry-run
 python scripts/kpi_auto_report.py --days 30
 python scripts/cleanup_db.py
-python scripts/import_all_data.py
-python scripts/import_tools.py
 ```
 
-Hinweis: Die ursprünglichen Seed-JSON-Dateien wurden nach dem Import entfernt. Die Import-Skripte laufen weiterhin und überspringen fehlende Dateien sauber.
+Hinweis: Seed-JSON-Dateien sind nach Bedarf im Ordner `data/` vorhanden.
+- `chatgbt_data.json`: aktive Wissensbasis für Re-Importe.
+- `test_import.json`: entfernt (war reine Test-Fixture).
+
+Legacy-Importer wurden archiviert und sind nicht mehr der empfohlene Standardpfad:
+- `scripts/archive/import_all_data.py` (deprecated)
+- `scripts/archive/import_tools.py` (deprecated)
+- Standard bleibt `import_knowledge.py`.
 
 Optional kannst du eigene JSON-Quellen angeben:
 
 ```bash
-python scripts/import_all_data.py --data-dir ./dein-json-ordner
-python scripts/import_tools.py --json ./dein-json-ordner/tools_database.json
+python scripts/import_knowledge.py --file ./dein-json-ordner/deine_datei.json --dry-run
+python scripts/import_knowledge.py --file ./dein-json-ordner/deine_datei.json
 ```
+
+Empfohlener Ablauf fuer neue Wissensdaten:
+1) `python scripts/import_knowledge.py --file data/<datei>.json --dry-run`
+2) `python scripts/import_knowledge.py --file data/<datei>.json`
+3) `python scripts/data_quality_check.py --fix`
+4) `python scripts/project_status.py`

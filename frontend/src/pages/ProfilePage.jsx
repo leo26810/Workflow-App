@@ -1,10 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 
 const LEVELS = ['Anfänger', 'Fortgeschritten', 'Experte']
-const CATEGORIES = ['KI-Textgenerierung', 'Bilderstellung', 'Recherche', 'Design & Präsentation', 'Lernen & Schule', 'Mathe & Wissenschaft', 'Übersetzung', 'Literaturverwaltung', 'Allgemein']
-
 export default function ProfilePage() {
-  const [profile, setProfile] = useState({ user: {}, skills: [], goals: [], tools: [] })
+  const [profile, setProfile] = useState({
+    user: {},
+    skills: [],
+    goals: [],
+    tools: [],
+    pagination: { page: 1, limit: 20, skills_total: 0, tools_total: 0, skills_pages: 0, tools_pages: 0 }
+  })
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('skills')
   const [contextData, setContextData] = useState({
@@ -35,6 +39,7 @@ export default function ProfilePage() {
   const [editName, setEditName] = useState('')
   const [editingName, setEditingName] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [categoryOptions, setCategoryOptions] = useState(['Allgemein'])
 
   // Profil beim Laden der Seite abrufen
   useEffect(() => {
@@ -43,10 +48,44 @@ export default function ProfilePage() {
 
   const fetchProfile = async () => {
     try {
-      const res = await fetch('/api/profile')
-      const data = await res.json()
-      setProfile(data)
-      setEditName(data.user?.name || '')
+      const [profileRes, skillsRes, goalsRes, toolsRes] = await Promise.all([
+        fetch('/api/profile?page=1&limit=20'),
+        fetch('/api/skills'),
+        fetch('/api/goals'),
+        fetch('/api/tools?page=1&limit=500')
+      ])
+
+      const profileData = profileRes.ok ? await profileRes.json() : { user: {}, skills: [], goals: [], tools: [], pagination: {} }
+      const skillsData = skillsRes.ok ? await skillsRes.json() : profileData.skills
+      const goalsData = goalsRes.ok ? await goalsRes.json() : profileData.goals
+      const toolsData = toolsRes.ok ? await toolsRes.json() : { items: profileData.tools, total: profileData.tools?.length || 0 }
+
+      const mergedProfile = {
+        ...profileData,
+        skills: Array.isArray(skillsData) ? skillsData : (Array.isArray(profileData.skills) ? profileData.skills : []),
+        goals: Array.isArray(goalsData) ? goalsData : (Array.isArray(profileData.goals) ? profileData.goals : []),
+        tools: Array.isArray(toolsData?.items) ? toolsData.items : (Array.isArray(profileData.tools) ? profileData.tools : []),
+        pagination: {
+          ...(profileData.pagination || {}),
+          skills_total: Array.isArray(skillsData) ? skillsData.length : (profileData.pagination?.skills_total || 0),
+          tools_total: typeof toolsData?.total === 'number'
+            ? toolsData.total
+            : (profileData.pagination?.tools_total || 0),
+        }
+      }
+
+      setProfile(mergedProfile)
+      setEditName(mergedProfile.user?.name || '')
+
+      const mergedCategorySet = new Set(['Allgemein'])
+      ;(mergedProfile.tools || []).forEach((tool) => {
+        if ((tool?.category || '').trim()) mergedCategorySet.add(tool.category.trim())
+      })
+      const categoryTree = Array.isArray(profileData?.categories) ? profileData.categories : []
+      categoryTree.forEach((cat) => {
+        if ((cat?.name || '').trim()) mergedCategorySet.add(cat.name.trim())
+      })
+      setCategoryOptions(Array.from(mergedCategorySet).sort((a, b) => a.localeCompare(b, 'de')))
 
       const contextRes = await fetch('/api/user-context')
       if (contextRes.ok) {
@@ -174,6 +213,24 @@ export default function ProfilePage() {
 
   const TOOL_TYPE_OPTIONS = ['Text-KI', 'Bilderstellung', 'Recherche', 'Lerntools', 'Coding']
 
+  const toolStats = useMemo(() => {
+    const total = profile.tools.length
+    const withDomain = profile.tools.filter((t) => (t?.domain || '').trim()).length
+    const withTags = profile.tools.filter((t) => (t?.tags || '').trim()).length
+    const withUseCase = profile.tools.filter((t) => (t?.use_case || '').trim()).length
+    return {
+      total,
+      domainCoverage: total ? Math.round((withDomain / total) * 100) : 0,
+      tagCoverage: total ? Math.round((withTags / total) * 100) : 0,
+      useCaseCoverage: total ? Math.round((withUseCase / total) * 100) : 0,
+    }
+  }, [profile.tools])
+
+  const getTagList = (text) => {
+    if (!text) return []
+    return String(text).split(',').map((t) => t.trim()).filter(Boolean).slice(0, 6)
+  }
+
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-muted)' }}>
@@ -183,9 +240,9 @@ export default function ProfilePage() {
   }
 
   const tabs = [
-    { id: 'skills', label: 'Fähigkeiten', count: profile.skills.length },
+    { id: 'skills', label: 'Fähigkeiten', count: profile.pagination?.skills_total ?? profile.skills.length },
     { id: 'goals', label: 'Ziele', count: profile.goals.length },
-    { id: 'tools', label: 'Tools', count: profile.tools.length },
+    { id: 'tools', label: 'Tools', count: profile.pagination?.tools_total ?? profile.tools.length },
     { id: 'context', label: 'Mein Kontext' },
   ]
 
@@ -448,6 +505,9 @@ export default function ProfilePage() {
       {/* SKILLS TAB */}
       {activeTab === 'skills' && (
         <div className="animate-slide-in">
+          <p style={{ margin: '0 0 0.75rem', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+            Angezeigt: {profile.skills.length} von {profile.pagination?.skills_total ?? profile.skills.length}
+          </p>
           {/* Neue Fähigkeit hinzufügen */}
           <div className="card" style={{ marginBottom: '1.5rem' }}>
             <h3 style={{ margin: '0 0 1rem', fontSize: '0.95rem', fontWeight: 600 }}>+ Fähigkeit hinzufügen</h3>
@@ -531,16 +591,40 @@ export default function ProfilePage() {
       {/* TOOLS TAB */}
       {activeTab === 'tools' && (
         <div className="animate-slide-in">
+          <p style={{ margin: '0 0 0.75rem', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+            Angezeigt: {profile.tools.length} von {profile.pagination?.tools_total ?? profile.tools.length}
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '0.6rem', marginBottom: '1rem' }}>
+            <div className="card" style={{ padding: '0.7rem 0.8rem' }}>
+              <p className="label" style={{ margin: 0 }}>Tools</p>
+              <p style={{ margin: '0.2rem 0 0', fontSize: '1rem', color: 'var(--text-primary)' }}>{toolStats.total}</p>
+            </div>
+            <div className="card" style={{ padding: '0.7rem 0.8rem' }}>
+              <p className="label" style={{ margin: 0 }}>Domain-Abdeckung</p>
+              <p style={{ margin: '0.2rem 0 0', fontSize: '1rem', color: 'var(--text-primary)' }}>{toolStats.domainCoverage}%</p>
+            </div>
+            <div className="card" style={{ padding: '0.7rem 0.8rem' }}>
+              <p className="label" style={{ margin: 0 }}>Tag-Abdeckung</p>
+              <p style={{ margin: '0.2rem 0 0', fontSize: '1rem', color: 'var(--text-primary)' }}>{toolStats.tagCoverage}%</p>
+            </div>
+            <div className="card" style={{ padding: '0.7rem 0.8rem' }}>
+              <p className="label" style={{ margin: 0 }}>Use-Case-Abdeckung</p>
+              <p style={{ margin: '0.2rem 0 0', fontSize: '1rem', color: 'var(--text-primary)' }}>{toolStats.useCaseCoverage}%</p>
+            </div>
+          </div>
           <div className="card" style={{ marginBottom: '1.5rem' }}>
             <h3 style={{ margin: '0 0 1rem', fontSize: '0.95rem', fontWeight: 600 }}>+ Tool hinzufügen</h3>
             <div style={{ display: 'grid', gap: '0.75rem' }}>
               <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
                 <input className="input-field" placeholder="Tool-Name" value={newTool.name} onChange={e => setNewTool(p => ({ ...p, name: e.target.value }))} style={{ flex: 1 }} />
                 <select className="input-field" value={newTool.category} onChange={e => setNewTool(p => ({ ...p, category: e.target.value }))} style={{ width: '200px' }}>
-                  {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                  {categoryOptions.map(c => <option key={c}>{c}</option>)}
                 </select>
               </div>
               <input className="input-field" placeholder="URL (https://...)" value={newTool.url} onChange={e => setNewTool(p => ({ ...p, url: e.target.value }))} />
+              <p style={{ margin: 0, fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                Hinweis: Erweiterte Felder wie Domain, Tags, Use-Case und Pricing kommen am besten per JSON-Import in die Wissensbasis.
+              </p>
               <div style={{ display: 'flex', gap: '0.75rem' }}>
                 <input className="input-field" placeholder="Notizen (z.B. Kostenlos, 10 Bilder/Tag)" value={newTool.notes} onChange={e => setNewTool(p => ({ ...p, notes: e.target.value }))} style={{ flex: 1 }} />
                 <button className="btn-ghost" style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }} onClick={addTool} disabled={saving || !newTool.name.trim()}>+ Hinzufügen</button>
@@ -557,9 +641,18 @@ export default function ProfilePage() {
             {profile.tools.map(tool => (
               <div key={tool.id} className="card" style={{ padding: '0.875rem 1rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.25rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
                     <strong style={{ fontSize: '0.9rem' }}>{tool.name}</strong>
                     <span style={{ background: 'rgba(96,165,250,0.12)', color: 'var(--accent2)', border: '1px solid rgba(96,165,250,0.2)', padding: '1px 8px', borderRadius: '10px', fontSize: '0.72rem' }}>{tool.category}</span>
+                    {!!(tool.domain || '').trim() && (
+                      <span style={{ background: 'rgba(34,211,238,0.12)', color: '#67E8F9', border: '1px solid rgba(34,211,238,0.2)', padding: '1px 8px', borderRadius: '10px', fontSize: '0.72rem' }}>{tool.domain}</span>
+                    )}
+                    {!!(tool.pricing_model || '').trim() && (
+                      <span style={{ background: 'rgba(74,222,128,0.12)', color: '#86EFAC', border: '1px solid rgba(74,222,128,0.2)', padding: '1px 8px', borderRadius: '10px', fontSize: '0.72rem' }}>{tool.pricing_model}</span>
+                    )}
+                    {!!(tool.skill_requirement || '').trim() && (
+                      <span style={{ background: 'rgba(251,191,36,0.12)', color: '#FCD34D', border: '1px solid rgba(251,191,36,0.2)', padding: '1px 8px', borderRadius: '10px', fontSize: '0.72rem' }}>Level: {tool.skill_requirement}</span>
+                    )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     {tool.url && (
@@ -568,7 +661,14 @@ export default function ProfilePage() {
                     <button className="icon-btn" onClick={() => deleteTool(tool.id)} aria-label="Tool entfernen" title="Entfernen">×</button>
                   </div>
                 </div>
-                {tool.notes && <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-muted)' }}>{tool.notes}</p>}
+                {!!(tool.use_case || '').trim() && <p style={{ margin: '0.22rem 0 0', fontSize: '0.8rem', color: 'var(--text-primary)' }}>{tool.use_case}</p>}
+                {!!(tool.platform || '').trim() && <p style={{ margin: '0.2rem 0 0', fontSize: '0.76rem', color: 'var(--text-muted)' }}>Plattform: {tool.platform}</p>}
+                {getTagList(tool.tags).length > 0 && (
+                  <div style={{ marginTop: '0.28rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                    {getTagList(tool.tags).map(tag => <span key={`${tool.id}-${tag}`} className="tag">#{tag}</span>)}
+                  </div>
+                )}
+                {tool.notes && <p style={{ margin: '0.28rem 0 0', fontSize: '0.76rem', color: 'var(--text-muted)' }}>{tool.notes}</p>}
               </div>
             ))}
           </div>
