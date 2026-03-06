@@ -8,7 +8,9 @@ import os
 import pytest
 
 # Add scripts directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../scripts'))
+backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+scripts_dir = os.path.join(os.path.dirname(backend_dir), 'scripts')
+sys.path.insert(0, scripts_dir)
 
 from data_quality_check import normalize_skill, normalize_pricing
 

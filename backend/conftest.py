@@ -44,21 +44,15 @@ def db_session(app):
     Changes made in tests are rolled back after each test.
     """
     with app.app_context():
-        connection = _db.engine.connect()
-        transaction = connection.begin()
+        # Create all tables
+        _db.create_all()
         
-        # Bind session to connection
-        session = _db.create_scoped_session(
-            options={'bind': connection, 'binds': {}}
-        )
-        _db.session = session
+        yield _db.session
         
-        yield session
-        
-        # Rollback transaction and close connection
-        transaction.rollback()
-        connection.close()
-        session.remove()
+        # Rollback and cleanup
+        _db.session.rollback()
+        _db.session.remove()
+        _db.drop_all()
 
 
 @pytest.fixture
