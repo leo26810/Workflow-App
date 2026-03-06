@@ -470,8 +470,10 @@ def get_backend_report() -> list[str]:
                 "call_groq_with_micro_prompt",
             ]
             for function_name in required_recommendation_functions:
-                marker = f"def {function_name}("
-                status = "✅" if marker in recommendation_service_content else "❌"
+                # Akzeptiert sowohl direkte Funktion-Definitionen als auch Re-Export-Adapter per Import.
+                has_definition = f"def {function_name}(" in recommendation_service_content
+                has_import = f"{function_name}," in recommendation_service_content or f"{function_name}\n" in recommendation_service_content
+                status = "✅" if (has_definition or has_import) else "❌"
                 report.append(f"  {status} {function_name}")
         else:
             report.append("  ❌ backend/services/recommendation_service.py fehlt")
@@ -486,10 +488,15 @@ def get_backend_report() -> list[str]:
         report.append(f"  {'✅' if has_polling_loop else '❌'} Polling-Loop vorhanden")
         report.append(f"  {'✅' if has_worker_loop else '❌'} Worker-Loop vorhanden")
 
+        recommendation_scoring_path = ROOT / "backend" / "services" / "recommendation_scoring.py"
+
         if recommendation_service_path.exists():
             recommendation_service_content = recommendation_service_path.read_text(encoding="utf-8", errors="ignore")
             has_micro_prompt_call = "call_groq_with_micro_prompt" in recommendation_service_content
-            has_tool_need_map = "TOOL_NEED_MAP" in recommendation_service_content
+            has_tool_need_map = False
+            if recommendation_scoring_path.exists():
+                recommendation_scoring_content = recommendation_scoring_path.read_text(encoding="utf-8", errors="ignore")
+                has_tool_need_map = "TOOL_NEED_MAP" in recommendation_scoring_content
             report.append(f"{'✅' if has_micro_prompt_call else '❌'} Micro-Prompt-System: call_groq_with_micro_prompt vorhanden")
             report.append(f"{'✅' if has_tool_need_map else '❌'} Tool-Matching: TOOL_NEED_MAP vorhanden")
         else:
