@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { apiClient } from '../services/apiClient'
 
 const ENDPOINTS = [
   { key: 'health', label: 'Health', url: '/api/health' },
@@ -44,18 +45,15 @@ export default function ConfigPage() {
         const items = await Promise.all(
           ENDPOINTS.map(async (ep) => {
             try {
-              const res = await fetch(ep.url)
-              let data = null
-              if (res.ok) {
-                data = await res.json()
-              }
+              const result = await apiClient.get(ep.url, { timeout: 5000, retries: 1 })
               return {
                 key: ep.key,
                 label: ep.label,
                 url: ep.url,
-                ok: res.ok,
-                status: res.status,
-                data,
+                ok: result.ok,
+                status: result.status,
+                data: result.ok ? result.data : null,
+                error: result.error?.message,
               }
             } catch (e) {
               return {

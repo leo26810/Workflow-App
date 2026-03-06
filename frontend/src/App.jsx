@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard.jsx'
 import ProfilePage from './pages/ProfilePage.jsx'
 import HistoryPage from './pages/HistoryPage.jsx'
 import ConfigPage from './pages/ConfigPage.jsx'
+import { apiClient } from './services/apiClient'
 
 export default function App() {
   const location = useLocation()
@@ -21,8 +22,8 @@ export default function App() {
     let alive = true
     const loadHealth = async () => {
       try {
-        const res = await fetch('/api/health')
-        const data = res.ok ? await res.json() : { groq_configured: false }
+        const result = await apiClient.get('/api/health', { timeout: 3000, retries: 1 })
+        const data = result.ok ? result.data : { groq_configured: false }
         if (!alive) return
         setHealthStatus({ loading: false, groqConfigured: !!data?.groq_configured })
       } catch {

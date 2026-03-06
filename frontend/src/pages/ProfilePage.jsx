@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { apiClient } from '../services/apiClient'
 
 const LEVELS = ['Anfänger', 'Fortgeschritten', 'Experte']
 export default function ProfilePage() {
@@ -40,6 +41,7 @@ export default function ProfilePage() {
   const [editingName, setEditingName] = useState(false)
   const [saving, setSaving] = useState(false)
   const [categoryOptions, setCategoryOptions] = useState(['Allgemein'])
+  const [profileError, setProfileError] = useState(null)
 
   // Profil beim Laden der Seite abrufen
   useEffect(() => {
@@ -48,17 +50,18 @@ export default function ProfilePage() {
 
   const fetchProfile = async () => {
     try {
-      const [profileRes, skillsRes, goalsRes, toolsRes] = await Promise.all([
-        fetch('/api/profile?page=1&limit=20'),
-        fetch('/api/skills'),
-        fetch('/api/goals'),
-        fetch('/api/tools?page=1&limit=500')
+      setProfileError(null)
+      const [profileResult, skillsResult, goalsResult, toolsResult] = await Promise.all([
+        apiClient.get('/api/profile?page=1&limit=20', { timeout: 5000, retries: 2 }),
+        apiClient.get('/api/skills', { timeout: 5000, retries: 2 }),
+        apiClient.get('/api/goals', { timeout: 5000, retries: 2 }),
+        apiClient.get('/api/tools?page=1&limit=500', { timeout: 5000, retries: 2 }),
       ])
 
-      const profileData = profileRes.ok ? await profileRes.json() : { user: {}, skills: [], goals: [], tools: [], pagination: {} }
-      const skillsData = skillsRes.ok ? await skillsRes.json() : profileData.skills
-      const goalsData = goalsRes.ok ? await goalsRes.json() : profileData.goals
-      const toolsData = toolsRes.ok ? await toolsRes.json() : { items: profileData.tools, total: profileData.tools?.length || 0 }
+      const profileData = profileResult.ok ? profileResult.data : { user: {}, skills: [], goals: [], tools: [], pagination: {} }
+      const skillsData = skillsResult.ok ? skillsResult.data : profileData.skills
+      const goalsData = goalsResult.ok ? goalsResult.data : profileData.goals
+      const toolsData = toolsResult.ok ? toolsResult.data : { items: profileData.tools, total: profileData.tools?.length || 0 }
 
       const mergedProfile = {
         ...profileData,
@@ -87,9 +90,9 @@ export default function ProfilePage() {
       })
       setCategoryOptions(Array.from(mergedCategorySet).sort((a, b) => a.localeCompare(b, 'de')))
 
-      const contextRes = await fetch('/api/user-context')
-      if (contextRes.ok) {
-        const contextItems = await contextRes.json()
+      const contextResult = await apiClient.get('/api/user-context', { timeout: 5000, retries: 2 })
+      if (contextResult.ok) {
+        const contextItems = contextResult.data
         const nextData = {
           schule: {
             schulform: '',
@@ -122,6 +125,7 @@ export default function ProfilePage() {
       }
     } catch (e) {
       console.error('Profil konnte nicht geladen werden:', e)
+      setProfileError(e?.message || 'Profil konnte nicht geladen werden')
     } finally {
       setLoading(false)
     }
@@ -130,12 +134,14 @@ export default function ProfilePage() {
   const apiPost = async (body) => {
     setSaving(true)
     try {
-      await fetch('/api/profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      })
+      const resultPayload = await apiClient.post('/api/profile', body, { timeout: 10000, retries: 1 })
+      if (!resultPayload.ok) {
+        throw new Error(resultPayload.error?.message || 'Profiländerung konnte nicht gespeichert werden')
+      }
       await fetchProfile()
+      setProfileError(null)
+    } catch (e) {
+      setProfileError(e?.message || 'Profiländerung konnte nicht gespeichert werden')
     } finally {
       setSaving(false)
     }
@@ -183,12 +189,11 @@ export default function ProfilePage() {
   const saveContextField = async (area, key, value) => {
     const fieldToken = `${area}.${key}`
     try {
-      const res = await fetch('/api/user-context', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ area, key, value })
+      const resultPayload = await apiClient.post('/api/user-context', { area, key, value }, {
+        timeout: 10000,
+        retries: 1,
       })
-      if (!res.ok) throw new Error('Speichern fehlgeschlagen')
+      if (!resultPayload.ok) throw new Error(resultPayload.error?.message || 'Speichern fehlgeschlagen')
       setSavedFields(prev => ({ ...prev, [fieldToken]: true }))
       setTimeout(() => {
         setSavedFields(prev => {
@@ -198,6 +203,7 @@ export default function ProfilePage() {
         })
       }, 2000)
     } catch {
+      setProfileError('Kontextfeld konnte nicht gespeichert werden')
     }
   }
 
@@ -248,6 +254,11 @@ export default function ProfilePage() {
 
   return (
     <div style={{ padding: '2rem 2.5rem', maxWidth: '900px', margin: '0 auto' }}>
+      {!!profileError && (
+        <div className="card" style={{ marginBottom: '1rem', border: '1px solid rgba(248,113,113,0.3)', color: 'var(--danger)' }}>
+          <p style={{ margin: 0, fontSize: '0.85rem' }}>{profileError}</p>
+        </div>
+      )}
 
       {/* Header mit Nutzer-Name */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>

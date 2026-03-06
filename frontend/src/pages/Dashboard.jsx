@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import ErrorAlert from '../components/ErrorAlert'
+import LoadingOverlay from '../components/LoadingOverlay'
+import { apiClient } from '../services/apiClient'
 
 const QUICK_TASKS = [
   { label: '🎨 Bild erstellen', value: 'Ich brauche ein Bild für meine Präsentation über ...' },
@@ -38,6 +41,7 @@ export default function Dashboard() {
   const [resultVisible, setResultVisible] = useState(false)
   const resultRef = useRef(null)
   const autoTriggeredRef = useRef('')
+  const recommendationAbortRef = useRef(null)
 
   const selectedFocus = searchParams.get('focus') || ''
   const selectedSubcategory = searchParams.get('subcategory') || ''
@@ -87,6 +91,12 @@ export default function Dashboard() {
     if (errorCode === 'ai_provider_unavailable' || errorCode === 'ai_timeout') {
       return 'KI-Provider derzeit nicht erreichbar. Bitte erneut versuchen.'
     }
+    if (errorCode === 'TIMEOUT') {
+      return 'Zeitüberschreitung bei der Anfrage. Bitte erneut versuchen.'
+    }
+    if (errorCode === 'NETWORK' || errorCode === 'RETRY_EXHAUSTED') {
+      return 'Netzwerkfehler bei der Anfrage. Bitte Verbindung prüfen und erneut versuchen.'
+    }
     if (errorCode === 'recommendation_internal_error') {
       return 'Backend-Fehler bei der Empfehlungserstellung. Bitte Logs prüfen.'
     }
@@ -94,17 +104,11 @@ export default function Dashboard() {
     return fallbackMessage || 'Unbekannter Fehler bei der Empfehlung.'
   }
 
-  const parseRecommendationErrorResponse = async (res) => {
-    let payload = {}
-    try {
-      payload = await res.json()
-    } catch {
-      payload = {}
-    }
-
+  const parseRecommendationErrorResult = (resultPayload) => {
+    const payload = resultPayload?.error?.details?.response_data || {}
     const diagnostics = payload?.ai_diagnostics || payload?.details || {}
-    const errorCode = payload?.error_code || diagnostics?.code || null
-    const fallbackMessage = payload?.error || `Server-Fehler (${res.status})`
+    const errorCode = payload?.error_code || diagnostics?.code || resultPayload?.error?.code || null
+    const fallbackMessage = payload?.error || resultPayload?.error?.message || `Server-Fehler (${resultPayload?.status || 0})`
     const message = buildFrontendErrorMessage(errorCode, fallbackMessage, diagnostics)
 
     return {
@@ -159,22 +163,31 @@ export default function Dashboard() {
       setLoading(true)
       setError(null)
       setResult(null)
+      const controller = new AbortController()
+      recommendationAbortRef.current = controller
       try {
-        const res = await fetch('/api/recommendation', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ task_description: prefilledTask })
+        const resultPayload = await apiClient.post('/api/recommendation', {
+          task_description: prefilledTask,
+        }, {
+          timeout: 8000,
+          retries: 1,
+          signal: controller.signal,
         })
-        if (!res.ok) {
-          const parsedError = await parseRecommendationErrorResponse(res)
+        if (!resultPayload.ok) {
+          const parsedError = parseRecommendationErrorResult(resultPayload)
           throw new Error(parsedError.message)
         }
-        const data = await res.json()
+        const data = resultPayload.data
         setResult(data)
       } catch (err) {
-        setError(err.message || 'Verbindungsfehler. Ist das Backend gestartet?')
+        if (err?.name === 'AbortError') {
+          setError('Empfehlungsanfrage wurde abgebrochen.')
+        } else {
+          setError(err.message || 'Verbindungsfehler. Ist das Backend gestartet?')
+        }
       } finally {
         setLoading(false)
+        recommendationAbortRef.current = null
       }
     }
 
@@ -193,9 +206,12 @@ export default function Dashboard() {
       setTemplatesLoading(true)
       setTemplatesError(null)
       try {
-        const res = await fetch(`/api/task-templates?subcategory=${encodeURIComponent(selectedSubcategory)}`)
-        if (!res.ok) throw new Error('Templates konnten nicht geladen werden')
-        const data = await res.json()
+        const resultPayload = await apiClient.get(`/api/task-templates?subcategory=${encodeURIComponent(selectedSubcategory)}`, {
+          timeout: 5000,
+          retries: 2,
+        })
+        if (!resultPayload.ok) throw new Error(resultPayload.error?.message || 'Templates konnten nicht geladen werden')
+        const data = resultPayload.data
         if (!alive) return
         setTemplates(Array.isArray(data.templates) ? data.templates : [])
       } catch (err) {
@@ -227,15 +243,15 @@ export default function Dashboard() {
       setKpiLoading(true)
       setKpiError(null)
       try {
-        const profileRes = await fetch('/api/profile')
-        if (profileRes.ok) {
-          const profileData = await profileRes.json()
+        const profileResult = await apiClient.get('/api/profile', { timeout: 5000, retries: 2 })
+        if (profileResult.ok) {
+          const profileData = profileResult.data
           if (alive) setProfileName(profileData?.user?.name || 'Nutzer')
         }
 
-        const historyRes = await fetch('/api/workflow-history')
-        if (historyRes.ok) {
-          const historyData = await historyRes.json()
+        const historyResult = await apiClient.get('/api/workflow-history', { timeout: 5000, retries: 2 })
+        if (historyResult.ok) {
+          const historyData = historyResult.data
           if (alive && Array.isArray(historyData) && historyData.length) {
             const randomIndex = Math.floor(Math.random() * historyData.length)
             const randomItem = historyData[randomIndex]
@@ -243,23 +259,25 @@ export default function Dashboard() {
           }
         }
 
-        const categoriesRes = await fetch('/api/categories')
-        if (categoriesRes.ok) {
-          const categoriesJson = await categoriesRes.json()
+        const categoriesResult = await apiClient.get('/api/categories', { timeout: 5000, retries: 2 })
+        if (categoriesResult.ok) {
+          const categoriesJson = categoriesResult.data
           if (alive) setCategoriesData(Array.isArray(categoriesJson) ? categoriesJson : [])
         }
 
-        const kpiRes = await fetch('/api/kpis/report?days=30')
-        const toolsRes = await fetch('/api/tools?limit=500&page=1')
-        if (kpiRes.ok) {
-          const kpiJson = await kpiRes.json()
+        const [kpiResult, toolsResult] = await Promise.all([
+          apiClient.get('/api/kpis/report?days=30', { timeout: 5000, retries: 2 }),
+          apiClient.get('/api/tools?limit=500&page=1', { timeout: 5000, retries: 2 }),
+        ])
+        if (kpiResult.ok) {
+          const kpiJson = kpiResult.data
           if (alive) setKpiSummary(kpiJson)
         } else if (alive) {
-          setKpiError(`KPI nicht verfügbar (${kpiRes.status})`)
+          setKpiError(`KPI nicht verfügbar (${kpiResult.status})`)
         }
 
-        if (toolsRes.ok) {
-          const toolsJson = await toolsRes.json()
+        if (toolsResult.ok) {
+          const toolsJson = toolsResult.data
           if (alive) setToolsCatalog(Array.isArray(toolsJson?.items) ? toolsJson.items : [])
         }
       } catch {
@@ -281,24 +299,37 @@ export default function Dashboard() {
     setSelectedRating(0)
     setRatingSaved(false)
     setRatingError(null)
+    const controller = new AbortController()
+    recommendationAbortRef.current = controller
     try {
-      const res = await fetch('/api/recommendation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_description: task })
+      const resultPayload = await apiClient.post('/api/recommendation', {
+        task_description: task,
+      }, {
+        timeout: 8000,
+        retries: 1,
+        signal: controller.signal,
       })
-      if (!res.ok) {
-        const parsedError = await parseRecommendationErrorResponse(res)
+      if (!resultPayload.ok) {
+        const parsedError = parseRecommendationErrorResult(resultPayload)
         throw new Error(parsedError.message)
       }
-      const data = await res.json()
+      const data = resultPayload.data
       setResult(data)
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100)
     } catch (err) {
-      setError(err.message || 'Verbindungsfehler. Ist das Backend gestartet?')
+      if (err?.name === 'AbortError') {
+        setError('Empfehlungsanfrage wurde abgebrochen.')
+      } else {
+        setError(err.message || 'Verbindungsfehler. Ist das Backend gestartet?')
+      }
     } finally {
       setLoading(false)
+      recommendationAbortRef.current = null
     }
+  }
+
+  const handleCancelRecommendation = () => {
+    recommendationAbortRef.current?.abort()
   }
 
   const handleCopyPrompt = () => {
@@ -314,16 +345,15 @@ export default function Dashboard() {
     setRatingLoading(true)
     setRatingError(null)
     try {
-      const res = await fetch('/api/workflow-history', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: historyId,
-          rating,
-        })
+      const resultPayload = await apiClient.post('/api/workflow-history', {
+        id: historyId,
+        rating,
+      }, {
+        timeout: 10000,
+        retries: 1,
       })
 
-      if (!res.ok) throw new Error('Feedback konnte nicht gespeichert werden')
+      if (!resultPayload.ok) throw new Error(resultPayload.error?.message || 'Feedback konnte nicht gespeichert werden')
       setSelectedRating(rating)
       setRatingSaved(true)
     } catch (err) {
@@ -348,17 +378,16 @@ export default function Dashboard() {
     setSessionSaving(true)
     setSessionError(null)
     try {
-      const res = await fetch('/api/research-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: result?.task || task,
-          sources,
-          summary,
-          tags: 'dashboard,recherche,ki'
-        })
+      const resultPayload = await apiClient.post('/api/research-session', {
+        query: result?.task || task,
+        sources,
+        summary,
+        tags: 'dashboard,recherche,ki',
+      }, {
+        timeout: 10000,
+        retries: 1,
       })
-      if (!res.ok) throw new Error('Session konnte nicht gespeichert werden')
+      if (!resultPayload.ok) throw new Error(resultPayload.error?.message || 'Session konnte nicht gespeichert werden')
       setSessionSaved(true)
       setTimeout(() => setSessionSaved(false), 1800)
     } catch (err) {
@@ -408,6 +437,12 @@ export default function Dashboard() {
 
   return (
     <div style={{ padding: '2.4rem 2.7rem', maxWidth: '980px', margin: '0 auto' }}>
+      <LoadingOverlay
+        isVisible={loading}
+        message="Empfehlung wird erstellt..."
+        variant="full"
+        onCancel={handleCancelRecommendation}
+      />
       <div style={{ marginBottom: '2.2rem' }}>
         <h1 style={{ margin: '0 0 0.45rem', fontSize: '2rem', fontWeight: 300, color: 'rgba(255,255,255,0.95)' }}>
           {greetingText}, {profileName}.
@@ -535,9 +570,12 @@ export default function Dashboard() {
       )}
 
       {error && (
-        <div style={{ ...baseCardStyle, border: '1px solid rgba(248,113,113,0.26)', marginBottom: '1rem', padding: '0.72rem 0.9rem' }}>
-          <p style={{ margin: 0, color: 'var(--danger)', fontSize: '0.82rem', lineHeight: 1.45 }}>⚠ {error}</p>
-        </div>
+        <ErrorAlert
+          error={error}
+          variant="inline"
+          onDismiss={() => setError(null)}
+          onRetry={() => handleGetRecommendation()}
+        />
       )}
 
       {result && (

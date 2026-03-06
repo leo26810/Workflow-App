@@ -34,6 +34,13 @@ export const handlers = [
   })),
 
   ...apiUrls('/api/workflow-history').map((url) => http.get(url, () => HttpResponse.json([]))),
+  ...apiUrls('/api/recommendation-feedback').map((url) => http.get(url, () => HttpResponse.json({
+    items: [],
+    pagination: { page: 1, limit: 20, total: 0, pages: 1 },
+  }))),
+  ...apiUrls('/api/research-sessions').map((url) => http.get(url, () => HttpResponse.json([]))),
+  ...apiUrls('/api/telegram/status').map((url) => http.get(url, () => HttpResponse.json({ enabled: false, mode: 'disabled' }))),
+  ...apiUrls('/api/user-context').map((url) => http.get(url, () => HttpResponse.json([]))),
 
   ...apiUrls('/api/system/stats').map((url) => http.get(url, () => HttpResponse.json({
     total_tools: 2,

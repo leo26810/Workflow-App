@@ -4,7 +4,7 @@ Verwendet SQLAlchemy ORM mit SQLite als Datenbank
 """
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, TypeVar
 
 from extensions import db
@@ -16,6 +16,10 @@ def make_model(model_cls: type[ModelT], **values: Any) -> ModelT:
     for key, value in values.items():
         setattr(instance, key, value)
     return instance
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class User(db.Model):
@@ -105,7 +109,7 @@ class ToolUsageLog(db.Model):
     tool_id = db.Column(db.Integer, db.ForeignKey('tools.id'), nullable=False)
     task_description = db.Column(db.String(1000), nullable=False)
     rating = db.Column(db.Integer, nullable=False)
-    timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, nullable=False, default=utc_now)
     was_helpful = db.Column(db.Boolean, nullable=False, default=True)
 
     def to_dict(self):
@@ -129,7 +133,7 @@ class PromptTemplate(db.Model):
     category = db.Column(db.String(100), nullable=False, default='Allgemein')
     tool_id = db.Column(db.Integer, db.ForeignKey('tools.id'), nullable=True)
     use_count = db.Column(db.Integer, nullable=False, default=0)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
 
     def to_dict(self):
         return {
@@ -150,7 +154,7 @@ class WorkflowHistory(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     task_description = db.Column(db.String(1000), nullable=False)
     recommendation_json = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
     user_rating = db.Column(db.Integer, nullable=True)
 
     def to_dict(self):
@@ -178,8 +182,8 @@ class RecommendationFeedback(db.Model):
     reused = db.Column(db.Boolean, nullable=True)
     time_saved_minutes = db.Column(db.Integer, nullable=True)
     note = db.Column(db.String(1000), nullable=True)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
+    updated_at = db.Column(db.DateTime, nullable=False, default=utc_now, onupdate=utc_now)
 
     def to_dict(self):
         return {
@@ -331,7 +335,7 @@ class UserContext(db.Model):
     area = db.Column(db.String(50), nullable=False)  # ki / recherche / schule
     key = db.Column(db.String(120), nullable=False)
     value = db.Column(db.String(2000), nullable=True)
-    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=utc_now, onupdate=utc_now)
 
     def to_dict(self):
         return {
@@ -351,7 +355,7 @@ class ResearchSession(db.Model):
     query = db.Column(db.String(500), nullable=False)
     sources = db.Column(db.JSON, nullable=False, default=list)  # [{"url": "...", "title": "..."}]
     summary = db.Column(db.Text, nullable=True)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
     tags = db.Column(db.String(500), nullable=True)
 
     def to_dict(self):
@@ -1096,7 +1100,7 @@ def seed_extended_data():
                 tool_id=first_tool.id,
                 task_description='Titelbild für eine Biologie-Präsentation erstellen',
                 rating=4,
-                timestamp=datetime.utcnow() - timedelta(days=2),
+                timestamp=datetime.now(timezone.utc) - timedelta(days=2),
                 was_helpful=True,
             ),
             make_model(
@@ -1104,7 +1108,7 @@ def seed_extended_data():
                 tool_id=first_tool.id,
                 task_description='Recherche-Workflow für Facharbeit planen',
                 rating=5,
-                timestamp=datetime.utcnow() - timedelta(days=1),
+                timestamp=datetime.now(timezone.utc) - timedelta(days=1),
                 was_helpful=True,
             ),
         ])

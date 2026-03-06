@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
+import ErrorAlert from '../components/ErrorAlert'
+import LoadingOverlay from '../components/LoadingOverlay'
+import { apiClient } from '../services/apiClient'
 
 export default function HistoryPage() {
   const [entries, setEntries] = useState([])
@@ -9,6 +12,7 @@ export default function HistoryPage() {
   const [page, setPage] = useState(1)
   const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, pages: 0 })
   const [expandedId, setExpandedId] = useState(null)
+  const [reloadTick, setReloadTick] = useState(0)
 
   useEffect(() => {
     let alive = true
@@ -23,9 +27,12 @@ export default function HistoryPage() {
         if (search.trim()) params.set('search', search.trim())
         if (minRating > 0) params.set('min_rating', String(minRating))
 
-        const res = await fetch(`/api/recommendation-feedback?${params.toString()}`)
-        if (!res.ok) throw new Error(`Server-Fehler: ${res.status}`)
-        const data = await res.json()
+        const result = await apiClient.get(`/api/recommendation-feedback?${params.toString()}`, {
+          timeout: 5000,
+          retries: 2,
+        })
+        if (!result.ok) throw new Error(result.error?.message || `Server-Fehler: ${result.status}`)
+        const data = result.data
         if (!alive) return
         setEntries(Array.isArray(data?.items) ? data.items : [])
         setPagination(data?.pagination || { page: 1, limit: 20, total: 0, pages: 0 })
@@ -39,7 +46,7 @@ export default function HistoryPage() {
 
     loadHistory()
     return () => { alive = false }
-  }, [page, search, minRating])
+  }, [page, search, minRating, reloadTick])
 
   const historyStats = useMemo(() => {
     const ratings = entries.map((item) => item?.user_rating).filter((value) => typeof value === 'number')
@@ -135,8 +142,16 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      {loading && <p style={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.85rem' }}>Lade Verlauf…</p>}
-      {error && <p style={{ color: 'var(--danger)', fontSize: '0.85rem' }}>{error}</p>}
+      <LoadingOverlay isVisible={loading} message="Lade Verlauf..." variant="inline" />
+      <ErrorAlert
+        error={error}
+        variant="inline"
+        onDismiss={() => setError(null)}
+        onRetry={() => {
+          setError(null)
+          setReloadTick((current) => current + 1)
+        }}
+      />
 
       {!loading && !error && !entries.length && (
         <div style={cardStyle}>

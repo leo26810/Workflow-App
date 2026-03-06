@@ -78,7 +78,7 @@ def evaluate_kpi_against_target(metric_name: str, value):
 
 def compute_kpi_snapshot(days: int = 30) -> dict:
     bounded_days = max(1, min(365, days))
-    since = datetime.utcnow() - timedelta(days=bounded_days)
+    since = datetime.now(timezone.utc) - timedelta(days=bounded_days)
 
     feedback_rows = RecommendationFeedback.query.filter(RecommendationFeedback.updated_at >= since).all()
     recommendation_count = WorkflowHistory.query.filter(WorkflowHistory.created_at >= since).count()
