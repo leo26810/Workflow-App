@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from app_factory import create_app
 from extensions import db as _db
-from models import User, Skill, Goal, Tool, Domain, KnowledgeBase, ToolFeedback
+from models import User, Skill, Goal, Tool, Domain
 
 
 @pytest.fixture(scope='session')
@@ -70,7 +70,7 @@ def client(app, db_session):
 @pytest.fixture
 def sample_user(db_session):
     """Create a sample user for testing."""
-    user = User(id=1, name="Test User")
+    user = User(name="Test User")
     db_session.add(user)
     db_session.commit()
     return user
@@ -80,9 +80,9 @@ def sample_user(db_session):
 def sample_skills(db_session):
     """Create sample skills for testing."""
     skills = [
-        Skill(id=1, name="Python", level="Fortgeschritten"),
-        Skill(id=2, name="JavaScript", level="Anfänger"),
-        Skill(id=3, name="Data Analysis", level="Experte"),
+        Skill(name="Python", level="Fortgeschritten"),
+        Skill(name="JavaScript", level="Anfänger"),
+        Skill(name="Data Analysis", level="Experte"),
     ]
     db_session.add_all(skills)
     db_session.commit()
@@ -93,8 +93,8 @@ def sample_skills(db_session):
 def sample_goals(db_session):
     """Create sample goals for testing."""
     goals = [
-        Goal(id=1, description="Learn machine learning"),
-        Goal(id=2, description="Build a web application"),
+        Goal(description="Learn machine learning"),
+        Goal(description="Build a web application"),
     ]
     db_session.add_all(goals)
     db_session.commit()
@@ -106,49 +106,40 @@ def sample_tools(db_session):
     """Create sample tools for testing."""
     tools = [
         Tool(
-            id=1,
             name="VS Code",
             category="Development",
-            description="Code editor",
+            domain="Software Development",
             pricing_model="Kostenlos",
             skill_requirement="Anfänger",
             platform="Windows, Mac, Linux",
             use_case="Software Development",
             best_for="General coding tasks",
-            strengths="Lightweight, extensible, fast",
-            weaknesses="Heavy extension usage slows it down",
-            alternatives="Sublime Text, Atom",
-            website="https://code.visualstudio.com",
+            url="https://code.visualstudio.com",
+            is_free=True,
         ),
         Tool(
-            id=2,
             name="Notion",
             category="Productivity",
-            description="Note-taking and project management",
+            domain="Project Management",
             pricing_model="Freemium",
             skill_requirement="Anfänger",
             platform="Web, Windows, Mac, Mobile",
             use_case="Project Management",
             best_for="Personal knowledge management",
-            strengths="Flexible, beautiful UI, databases",
-            weaknesses="Can be slow, learning curve",
-            alternatives="Obsidian, Roam Research",
-            website="https://notion.so",
+            url="https://notion.so",
+            is_free=False,
         ),
         Tool(
-            id=3,
             name="Pandas",
             category="Data Science",
-            description="Data manipulation library",
+            domain="Data Science",
             pricing_model="Kostenlos",
             skill_requirement="Fortgeschritten",
             platform="Python",
             use_case="Data Analysis",
             best_for="Tabular data processing",
-            strengths="Powerful, flexible, well-documented",
-            weaknesses="Memory intensive, steep learning curve",
-            alternatives="Polars, Dask",
-            website="https://pandas.pydata.org",
+            url="https://pandas.pydata.org",
+            is_free=True,
         ),
     ]
     db_session.add_all(tools)
@@ -166,23 +157,3 @@ def sample_domains(db_session):
     db_session.add_all(domains)
     db_session.commit()
     return domains
-
-
-@pytest.fixture
-def sample_feedback(db_session, sample_tools):
-    """Create sample tool feedback for testing."""
-    feedback = [
-        ToolFeedback(
-            tool_names="VS Code, GitHub Copilot",
-            feedback_text="Great combination for coding",
-            rating=5,
-        ),
-        ToolFeedback(
-            tool_names="Notion",
-            feedback_text="Too slow for large databases",
-            rating=3,
-        ),
-    ]
-    db_session.add_all(feedback)
-    db_session.commit()
-    return feedback
