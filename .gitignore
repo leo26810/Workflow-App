@@ -11,3 +11,7 @@ frontend/dist/
 .DS_Store
 logs/
 data/*.json
+backend/.coverage
+backend/coverage.xml
+backend/htmlcov/
+frontend/coverage/

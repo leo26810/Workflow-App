@@ -13,6 +13,8 @@ Ziele:
 Technik-Stack:
 - Frontend: React 18 + Vite 5 + React Router 6.
 - Backend: Flask 3 + SQLAlchemy + SQLite.
+- Tests: pytest + pytest-flask + pytest-cov (Backend), Vitest + Testing Library + MSW (Frontend).
+- CI/CD: GitHub Actions Workflow (`.github/workflows/test.yml`).
 - Betrieb: Docker Compose (`workflow-backend`, `workflow-frontend`).
 
 
@@ -47,12 +49,17 @@ Technik-Stack:
 
 ```text
 .
+├─ .github/
+│  └─ workflows/
+│     └─ test.yml
 ├─ backend/
 │  ├─ app.py
 │  ├─ app_factory.py
 │  ├─ extensions.py
 │  ├─ models.py
 │  ├─ requirements.txt
+│  ├─ conftest.py
+│  ├─ pytest.ini
 │  ├─ .env.example
 │  ├─ routes/
 │  │  ├─ domains.py
@@ -78,25 +85,38 @@ Technik-Stack:
 │  │  └─ seed_service.py
 │  ├─ utils/
 │  │  └─ cache_utils.py
+│  ├─ tests/
+│  │  ├─ test_api_endpoints.py
+│  │  ├─ test_feedback_service.py
+│  │  ├─ test_recommendation_service.py
+│  │  └─ test_scripts/
+│  │     └─ test_data_quality_check.py
 │  └─ instance/
 ├─ frontend/
 │  ├─ package.json
+│  ├─ package-lock.json
 │  ├─ vite.config.js
+│  ├─ vitest.config.js
+│  ├─ public/
 │  └─ src/
 │     ├─ App.jsx
 │     ├─ main.jsx
 │     ├─ index.css
-│     └─ pages/
-│        ├─ Dashboard.jsx
-│        ├─ HistoryPage.jsx
-│        ├─ ConfigPage.jsx
-│        └─ ProfilePage.jsx
+│     ├─ pages/
+│     │  ├─ Dashboard.jsx
+│     │  ├─ HistoryPage.jsx
+│     │  ├─ ConfigPage.jsx
+│     │  └─ ProfilePage.jsx
+│     ├─ setup.test.js
+│     └─ __tests__/
+│        └─ App.test.jsx
 ├─ scripts/
 │  ├─ project_status.py
 │  ├─ data_quality_check.py
 │  ├─ migrate_schema_preserve.py
 │  ├─ import_knowledge.py
 │  ├─ cleanup_db.py
+│  ├─ start_day.ps1
 │  └─ archive/
 │     ├─ import_all_data.py
 │     └─ import_tools.py
@@ -333,6 +353,9 @@ Im Ordner `scripts/`:
 - `cleanup_db.py`
   - Bereinigung von Tool-Textfeldern.
   - Hilft beim Entfernen fehlerhafter oder leerer Tool-Felder vor Re-Importen.
+- `start_day.ps1`
+  - PowerShell-Startautomation fuer Tagesstart-Checks.
+  - Nutzt konsolidierte Prüfpfade und reduziert manuelle Startschritte.
 - `import_knowledge.py`
   - Neu: Haupt-Import fuer Wissensdaten (Domains, Kategorien, Tools) aus JSON-Dateien generiert durch ChatGPT/Perplexity/Gemini.
   - Upsert-Logik verhindert Duplikate.
@@ -349,7 +372,23 @@ Im Ordner `scripts/`:
 - Single-User-Modell (keine Auth, kein Mandantenkonzept).
 - SQLite als lokale Persistenz; Tool-Wissensbasis ist konzeptionell skalierbar auf 10.000+ Tools.
 - Viele Konfigurations- und Betriebsannahmen sind auf lokalen/dev-nahen Betrieb ausgelegt.
-- recommendation_service.py ist der komplexeste Service (~900 Zeilen) und enthält Klassifikations-, Scoring-, Prompt- und Merge-Logik in einer Datei. Bei weiterer Erweiterung empfiehlt sich eine Aufteilung in classification_service.py und scoring_service.py.
+- recommendation_service.py ist der komplexeste Service (~1250 Zeilen) und enthält Klassifikations-, Scoring-, Prompt- und Merge-Logik in einer Datei. Bei weiterer Erweiterung empfiehlt sich eine Aufteilung in classification_service.py, tool_scoring_service.py, prompt_service.py und ai_orchestration_service.py.
+
+
+## 14) Test- und CI-Status
+
+Backend-Tests:
+- Framework: `pytest`, `pytest-flask`, `pytest-cov`, `responses`
+- Einstieg: `cd backend && python -m pytest tests -v`
+
+Frontend-Tests:
+- Framework: `vitest`, `@testing-library/react`, `msw`, `jsdom`
+- Einstieg: `cd frontend && npm run test`
+
+CI/CD:
+- Workflow-Datei: `.github/workflows/test.yml`
+- Jobs: Backend, Frontend, Scripts
+- Ziel: kontinuierliche Coverage-Steigerung und stabile Regression-Checks
 
 
 ## 13) Kurzfazit

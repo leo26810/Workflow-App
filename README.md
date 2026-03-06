@@ -2,6 +2,12 @@
 
 KI-gestütztes Tool mit React (Vite) Frontend und Flask Backend.
 
+## Projektstand
+
+- Version: `v1.1.0` (Production-Hardening Stand `2026-03-06`)
+- Enthalten: Test-Infrastruktur (pytest + Vitest + MSW), GitHub Actions CI, Coverage-Gates, Service-/Status-Fixes
+- In Arbeit: schrittweise Stabilisierung und Erweiterung der neuen Testsuite
+
 ## Voraussetzungen
 
 - Node.js 18+
@@ -90,6 +96,42 @@ Wenn du die persistente SQLite-Datenbank ebenfalls löschen willst:
 docker compose down -v
 ```
 
+## Testen (lokal)
+
+Backend:
+
+```bash
+cd backend
+python -m pytest tests -v --no-cov
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm run test
+```
+
+Coverage:
+
+```bash
+cd backend
+python -m pytest tests -v --cov=. --cov-report=term-missing --cov-report=xml
+
+cd ../frontend
+npm run test:coverage
+```
+
+Hinweis: Die Testsuite ist bereits produktiv eingebunden, wird aber weiterhin auf die vollständige Zielabdeckung hochgezogen.
+
+## CI/CD
+
+GitHub Actions Workflow:
+- Datei: `.github/workflows/test.yml`
+- Jobs: `backend-tests`, `frontend-tests`, `scripts-tests`
+- Trigger: Push und Pull Requests auf `main`/`develop`
+- Coverage-Gates sind aktiv (Backend und Frontend)
+
 ## API-Endpunkte
 
 - `POST /api/recommendation`
@@ -168,6 +210,7 @@ python scripts/import_knowledge.py --file data/deine_datei.json
 python scripts/import_knowledge.py --dir data --dry-run
 python scripts/kpi_auto_report.py --days 30
 python scripts/cleanup_db.py
+powershell -ExecutionPolicy Bypass -File scripts/start_day.ps1
 ```
 
 Hinweis: Seed-JSON-Dateien sind nach Bedarf im Ordner `data/` vorhanden.

@@ -16,19 +16,31 @@ ROOT = Path(__file__).resolve().parent.parent
 IGNORED_DIRS = {"node_modules", "__pycache__", ".git", "venv", ".venv", "dist"}
 
 CORE_FILES = [
+    Path(".github/workflows/test.yml"),
     Path("scripts/project_status.py"),
     Path("scripts/data_quality_check.py"),
     Path("scripts/migrate_schema_preserve.py"),
     Path("scripts/import_knowledge.py"),
     Path("scripts/kpi_auto_report.py"),
     Path("scripts/cleanup_db.py"),
+    Path("scripts/start_day.ps1"),
     Path("backend/app.py"),
     Path("backend/models.py"),
     Path("backend/requirements.txt"),
+    Path("backend/conftest.py"),
+    Path("backend/pytest.ini"),
+    Path("backend/tests/test_api_endpoints.py"),
+    Path("backend/tests/test_feedback_service.py"),
+    Path("backend/tests/test_recommendation_service.py"),
+    Path("backend/tests/test_scripts/test_data_quality_check.py"),
     Path("backend/.env.example"),
     Path("backend/routes/domains.py"),
     Path("frontend/package.json"),
+    Path("frontend/package-lock.json"),
     Path("frontend/vite.config.js"),
+    Path("frontend/vitest.config.js"),
+    Path("frontend/src/setup.test.js"),
+    Path("frontend/src/__tests__/App.test.jsx"),
     Path("frontend/index.html"),
     Path("frontend/src/App.jsx"),
     Path("frontend/src/main.jsx"),
@@ -619,6 +631,14 @@ def get_frontend_report() -> list[str]:
     else:
         report.append("  ❌ frontend/src/App.jsx fehlt")
 
+    report.append("Test-Infra-Check (Frontend):")
+    vitest_config = ROOT / "frontend" / "vitest.config.js"
+    setup_test = ROOT / "frontend" / "src" / "setup.test.js"
+    app_test = ROOT / "frontend" / "src" / "__tests__" / "App.test.jsx"
+    report.append(f"  {'✅' if vitest_config.exists() else '❌'} frontend/vitest.config.js")
+    report.append(f"  {'✅' if setup_test.exists() else '❌'} frontend/src/setup.test.js")
+    report.append(f"  {'✅' if app_test.exists() else '❌'} frontend/src/__tests__/App.test.jsx")
+
     report.append("CSS-Designsystem-Altklassencheck (index.css):")
     css_path = ROOT / "frontend" / "src" / "index.css"
     deprecated_css_classes = ["tag-beginner", "tag-advanced", "tag-expert"]
@@ -711,6 +731,7 @@ def get_scripts_report() -> list[str]:
         (ROOT / "scripts" / "import_knowledge.py", ["--dry-run", "validate_payload", "import_payload"], "Knowledge-Import"),
         (ROOT / "scripts" / "data_quality_check.py", ["--fix", "print_audit", "apply_fixes"], "Data-Quality-Check"),
         (ROOT / "scripts" / "migrate_schema_preserve.py", ["ALTER TABLE", "domain", "ix_tool_domain"], "Schema-Migration"),
+        (ROOT / "scripts" / "start_day.ps1", ["project_status.py", "python", "Write-Host"], "Tagesstart-Automation"),
     ]
 
     for path, markers, label in script_checks:
@@ -754,6 +775,9 @@ def get_docs_report() -> list[str]:
             ("import_knowledge.py", "Knowledge-Import dokumentiert"),
             ("data_quality_check.py", "Data-Quality-Check dokumentiert"),
             ("migrate_schema_preserve.py", "Schema-Migration dokumentiert"),
+            ("pytest", "Backend-Tests dokumentiert"),
+            ("Vitest", "Frontend-Tests dokumentiert"),
+            (".github/workflows/test.yml", "CI-Workflow dokumentiert"),
             ("domain", "Domain-Modell dokumentiert"),
             ("pricing_model", "Erweiterte Tool-Felder dokumentiert"),
         ]
@@ -772,6 +796,9 @@ def get_docs_report() -> list[str]:
             ("import_knowledge.py", "Knowledge-Import in README"),
             ("data_quality_check.py", "Data-Quality-Check in README"),
             ("migrate_schema_preserve.py", "Schema-Migration in README"),
+            ("python -m pytest", "Backend-Testbefehl in README"),
+            ("npm run test", "Frontend-Testbefehl in README"),
+            (".github/workflows/test.yml", "CI-Workflow in README"),
         ]
         for marker, label in checks:
             status = "✅" if marker in content else "⚠️"
